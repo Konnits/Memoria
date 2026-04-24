@@ -1,0 +1,18 @@
+csv_path: data/processed/real_data_1.csv
+time_column: timestamp
+feature_columns:
+- valor
+target_columns:
+- valor
+train_ratio: 0.7
+val_ratio: 0.15
+history_length: 500
+min_history_length: 20
+target_offset: 1
+target_offset_min: 1
+target_offset_max: 4
+stride: 1
+batch_size: 128
+num_workers: 0
+shuffle_train: true
+use_event_tokens: true

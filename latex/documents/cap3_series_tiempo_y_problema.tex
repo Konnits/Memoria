@@ -1,0 +1,247 @@
+\chapter{Series de tiempo y formulación del problema}
+\label{cap:series-tiempo}
+
+En este capítulo se presentan los conceptos básicos relacionados con series de tiempo y se formula con precisión el problema que aborda esta memoria. El objetivo es establecer un marco formal que permita entender qué se espera del modelo propuesto y cómo se construyen los ejemplos supervisados a partir de datos temporales con marcas de tiempo no equiespaciadas.
+
+\hfill
+
+Primero se introduce la notación para series de tiempo univariadas y multivariadas, junto con la distinción entre series equiespaciadas e irregulares. Luego se describe el problema de predicción a corto y mediano plazo como una tarea de aprendizaje supervisado, en la que el modelo recibe una \emph{historia} (ventana de observaciones pasadas) y debe estimar el valor de la serie en uno o varios instantes futuros. Finalmente, se explica cómo se construyen los pares entrada--salida que se utilizarán durante el entrenamiento, incluyendo el rol de las longitudes de historia variables y de los offsets de predicción.
+
+\section{Conceptos básicos de series de tiempo}
+
+\subsection{Definición y notación}
+
+De manera general, una \textbf{serie de tiempo} es una secuencia de observaciones ordenadas en el tiempo. En su forma más simple (caso univariado) se puede escribir como:
+\begin{equation}
+    \{y_t\}_{t \in \mathcal{T}},
+\end{equation}
+donde $y_t \in \mathbb{R}$ es el valor observado en el tiempo $t$ y $\mathcal{T}$ es el conjunto de instantes de observación.
+
+\hfill
+
+En muchos problemas reales las observaciones son multivariadas. En ese caso se trabaja con vectores:
+\begin{equation}
+    \{\mathbf{y}_t\}_{t \in \mathcal{T}}, \qquad \mathbf{y}_t \in \mathbb{R}^{d_{\text{out}}},
+\end{equation}
+donde cada componente de $\mathbf{y}_t$ puede corresponder, por ejemplo, a la temperatura, presión, flujo, etc. en el mismo instante temporal.
+
+\hfill
+
+En esta memoria será útil distinguir entre:
+\begin{itemize}
+    \item \textbf{Variables de entrada} (o \emph{features}) denotadas por $\mathbf{x}_t \in \mathbb{R}^{d_{\text{in}}}$.
+    \item \textbf{Variables objetivo} (o \emph{targets}) denotadas por $\mathbf{y}_t \in \mathbb{R}^{d_{\text{out}}}$.
+\end{itemize}
+En algunos casos $\mathbf{x}_t$ y $\mathbf{y}_t$ pueden coincidir (se desea predecir la propia serie), mientras que en otros $\mathbf{x}_t$ y $\mathbf{y}_t$ representan magnitudes distintas.
+
+\hfill
+
+De forma compacta, a lo largo del tiempo se dispondrá de una secuencia de tripletas:
+\begin{equation}
+    \{(t_i, \mathbf{x}_i, \mathbf{y}_i)\}_{i=1}^{T},
+\end{equation}
+con $t_1 < t_2 < \dots < t_T$ los \emph{timestamps} asociados a cada observación.
+
+\subsection{Series equiespaciadas vs. no equiespaciadas}
+
+En muchos modelos clásicos de series de tiempo (por ejemplo, ARIMA o ciertas arquitecturas recurrentes) se asume que los datos están muestreados en instantes equiespaciados:
+\begin{equation}
+    t_i = t_0 + i \cdot \Delta t, \qquad \Delta t > 0 \text{ constante}.
+\end{equation}
+En este caso suele ser suficiente trabajar con un índice entero $i$ que representa el ``paso de tiempo'', y buena parte de la información temporal está implícita en la posición de la observación dentro de la secuencia.
+
+\hfill
+
+Sin embargo, en muchos dominios aplicados los datos presentan:
+\begin{itemize}
+    \item \textbf{Frecuencias de muestreo variables} (sensores que cambian de tasa según el modo de operación).
+    \item \textbf{Datos faltantes} o ventanas en las que no se registran observaciones.
+    \item \textbf{Eventos esporádicos} que no siguen una grilla temporal fija (por ejemplo, mediciones realizadas sólo ante ciertas condiciones).
+\end{itemize}
+
+En estos casos, los instantes de observación
+\begin{equation}
+    t_1, t_2, \dots, t_T
+\end{equation}
+ya no están separados por un intervalo constante, y la información contenida en las diferencias $t_{i+1} - t_i$ pasa a ser relevante. A este tipo de datos nos referiremos como \textbf{series de tiempo no equiespaciadas} o \textbf{con timestamps irregulares}.
+
+Trabajar directamente con timestamps reales permite, por ejemplo:
+\begin{itemize}
+    \item Distinguir entre dos ejemplos con el mismo número de observaciones en la historia pero con escalas temporales distintas (historia concentrada en pocos minutos vs. varios días).
+    \item Definir horizontes de predicción en términos de tiempo real (por ejemplo, ``predecir a 15 minutos, 1 hora y 3 horas en el futuro'') en lugar de solo ``a 1, 3 o 5 pasos''.
+\end{itemize}
+
+Estas características motivan la necesidad de modelos capaces de incorporar explícitamente la información temporal continua, lo que se abordará en capítulos posteriores mediante mecanismos de \emph{encoding temporal continuo} dentro de la arquitectura Transformer.
+
+\section{Datos considerados en la memoria}
+\label{sec:datos-considerados}
+
+La memoria considera dos escenarios generales de datos:
+\begin{itemize}
+    \item \textbf{Datos sintéticos}, utilizados como entorno controlado para validar el comportamiento básico del pipeline y de la arquitectura en un contexto donde la generación de la serie puede analizarse con mayor trazabilidad.
+    \item \textbf{Datos reales procesados}, organizados como una colección de datasets temporales independientes, sobre los cuales se ejecuta el benchmark principal reportado en los capítulos experimentales.
+\end{itemize}
+
+\hfill
+
+En ambos casos, la estructura de trabajo es esencialmente la misma: cada dataset contiene una columna temporal que fija el orden de observación y una o más variables numéricas que actúan como entradas y objetivos de predicción. En la etapa actualmente consolidada de esta memoria, el benchmark principal se apoya sobre datasets reales procesados con una variable objetivo escalar, de modo que el problema experimental activo corresponde a forecasting univariado con timestamps irregulares.
+
+\hfill
+
+La razón para considerar tanto datos sintéticos como reales es metodológica. Los datos sintéticos permiten verificar que el pipeline de construcción de ventanas, escalado, entrenamiento y predicción funciona de extremo a extremo bajo condiciones más controladas. Los datos reales, en cambio, permiten evaluar si la arquitectura mantiene un comportamiento competitivo en escenarios más cercanos a una aplicación práctica, donde la irregularidad temporal y la variabilidad entre datasets son parte central del problema.
+
+\hfill
+
+Los detalles específicos del protocolo experimental, de las configuraciones de entrenamiento y de la comparación entre modelos se desarrollan en el Capítulo~\ref{cap:experimentos}. En este capítulo interesa principalmente dejar establecido que la formulación matemática introducida a continuación busca cubrir ambos escenarios bajo un mismo marco general.
+
+\section{Problema de predicción en series de tiempo}
+
+\subsection{Predicción a partir de una ventana de historia}
+
+En la práctica, el problema de predicción se formula como una tarea de aprendizaje supervisado sobre ventanas finitas de la serie. Sea
+\begin{equation}
+    \mathcal{H}_i = \{(t_j, \mathbf{x}_j, \mathbf{y}_j) : j \le i\}
+\end{equation}
+la historia completa disponible hasta el índice $i$. Dado un horizonte de predicción definido por un instante futuro $t^\star > t_i$, se desea construir un modelo
+\begin{equation}
+    F_\theta : \mathcal{H}_i \longmapsto \widehat{\mathbf{y}}_{t^\star},
+\end{equation}
+parametrizado por $\theta$, que entregue una predicción $\widehat{\mathbf{y}}_{t^\star}$ de la variable objetivo en $t^\star$.
+
+\hfill
+
+Por motivos computacionales y de regularización, se trabaja con una \textbf{historia truncada} de longitud acotada. En esta memoria se utiliza una ventana deslizante que, para cada ejemplo, considera sólo las últimas $h$ observaciones antes de $t^\star$:
+\begin{equation}
+    \mathcal{H}^{(h)}_i
+    = \{(t_j, \mathbf{x}_j, \mathbf{y}_j) : i-h+1 \le j \le i\}.
+\end{equation}
+En otras palabras, el modelo verá únicamente un fragmento reciente de la serie y deberá aprender a extraer de allí la información relevante para predecir en el horizonte deseado.
+
+\subsection{Horizontes de predicción y offsets}
+
+En el caso de datos equiespaciados, es habitual definir el horizonte de predicción en términos de pasos discretos, por ejemplo:
+\begin{equation}
+    \text{predecir } y_{t+k} \text{ a partir de } \{y_{t-h+1}, \dots, y_{t}\},
+\end{equation}
+donde $k$ es el número de pasos hacia adelante.
+
+En esta memoria se adopta una formulación que combina ambas visiones:
+\begin{itemize}
+    \item A nivel de construcción del dataset, se define un \textbf{offset de predicción} $o$ que indica cuántos índices después del \emph{anchor} se tomará el target en la secuencia original.
+    \item A nivel del modelo, además, se utilizan los timestamps reales $t_i$ para informar la distancia temporal efectiva entre la última observación de la historia y el instante objetivo.
+\end{itemize}
+
+Más concretamente, para cada ejemplo se elige un índice \emph{anchor} $a$ (que marca el final de la historia) y un offset de predicción $o \ge 0$. El índice del target será entonces:
+\begin{equation}
+    i_{\text{target}} = a + o.
+\end{equation}
+El instante objetivo correspondiente es $t_{i_{\text{target}}}$ y el valor a predecir es $\mathbf{y}_{i_{\text{target}}}$.
+
+\hfill
+
+Durante el entrenamiento se pueden considerar:
+\begin{itemize}
+    \item Un único offset fijo (por ejemplo, siempre predecir un paso adelante).
+    \item Un conjunto discreto de offsets posibles (por ejemplo $\{1, 3, 5\}$), que se muestren aleatoriamente. Esto permite entrenar al modelo para manejar distintos horizontes dentro de un mismo esquema.
+\end{itemize}
+
+\section{Construcción de ejemplos supervisados}
+
+\subsection{Ventanas deslizantes y tamaño de la historia}
+
+Sea $T$ el número total de observaciones disponibles. Dado un \textbf{tamaño máximo de historia} $H$ y un \textbf{stride} $s \ge 1$, se generan ejemplos recorriendo la serie con una ventana deslizante. De manera simplificada, los índices \emph{anchor} se pueden escribir como:
+\begin{equation}
+    a \in \{H, H+s, H+2s, \dots, a_{\max}\},
+\end{equation}
+donde $a_{\max}$ se elige de modo que exista al menos un offset de predicción válido (es decir, $a_{\max} + o_{\max} \le T-1$, con $o_{\max}$ el máximo offset considerado).
+
+Para cada anchor $a$ se define una historia formada por las últimas $h$ observaciones anteriores a $a$:
+\begin{equation}
+    \mathcal{H}_a^{(h)} = \{(t_j, \mathbf{x}_j, \mathbf{y}_j)\}_{j=a-h}^{a-1},
+\end{equation}
+donde $h$ puede tomar valores entre una longitud mínima $H_{\min}$ y la longitud máxima $H$:
+\begin{equation}
+    H_{\min} \le h \le H.
+\end{equation}
+
+En esta memoria se consideran dos configuraciones:
+\begin{itemize}
+    \item \textbf{Historia fija}: $H_{\min} = H$, por lo que todas las historias tienen la misma longitud.
+    \item \textbf{Historia variable}: $H_{\min} < H$, y para cada ejemplo se muestrea aleatoriamente una longitud $h \in [H_{\min}, H]$. De este modo, el modelo se entrena para manejar ventanas de contexto de tamaño variable, algo relevante cuando la densidad temporal de los datos cambia en el tiempo.
+\end{itemize}
+
+\subsection{Definición de la entrada y la salida de cada ejemplo}
+
+Cada ejemplo supervisado queda entonces determinado por:
+\begin{align}
+    \text{Entrada} &: \Big(\{t_j\}_{j=a-h}^{a-1}, \{\mathbf{x}_j\}_{j=a-h}^{a-1}, \{\mathbf{y}_j\}_{j=a-h}^{a-1}, t_{i_{\text{target}}}\Big), \\
+    \text{Salida} &: \mathbf{y}_{i_{\text{target}}},
+\end{align}
+donde $i_{\text{target}} = a + o$ como se describió antes.
+
+\hfill
+
+En términos más operativos, es útil separar:
+\begin{itemize}
+    \item Un vector de tiempos de la historia:
+    \[
+        \mathbf{t}^{(\text{past})} = (t_{a-h}, \dots, t_{a-1}),
+    \]
+    \item Una matriz de valores de entrada:
+    \[
+        X^{(\text{past})} \in \mathbb{R}^{h \times d_{\text{in}}},
+    \]
+    \item El timestamp objetivo $t^{(\text{target})} = t_{i_{\text{target}}}$,
+    \item Y el vector de salida
+    \[
+        \mathbf{y}^{(\text{target})} = \mathbf{y}_{i_{\text{target}}} \in \mathbb{R}^{d_{\text{out}}}.
+    \]
+\end{itemize}
+
+El modelo propuesto en esta memoria recibirá como entrada una secuencia construida a partir de la historia y del timestamp objetivo (mediante la adición de un token especial), y deberá producir una estimación $\widehat{\mathbf{y}}^{(\text{target})}$ de la salida verdadera. Los detalles de esta representación se desarrollan en el capítulo dedicado al modelo Transformer.
+
+\section{Formulación como problema de aprendizaje supervisado}
+
+\subsection{Función objetivo}
+
+Sea $\mathcal{D}_{\text{train}}$ el conjunto de ejemplos construidos según el procedimiento anterior. El problema de entrenamiento consiste en hallar parámetros $\theta$ que minimicen una función de pérdida agregada sobre todos los ejemplos de entrenamiento.
+
+\hfill
+
+Para problemas de regresión se utilizará principalmente la pérdida de error cuadrático medio:
+\begin{equation}
+    \mathcal{L}(\theta)
+    = \frac{1}{|\mathcal{D}_{\text{train}}|}
+      \sum_{(\text{entrada}, \mathbf{y}) \in \mathcal{D}_{\text{train}}}
+      \left\|F_\theta(\text{entrada}) - \mathbf{y}\right\|^2,
+\end{equation}
+donde $F_\theta$ representa al modelo (en este caso, el Transformer especializado) y la norma se aplica sobre las componentes de la variable objetivo.
+
+\hfill
+
+En el capítulo de entrenamiento se considerarán también otras métricas de evaluación, como error absoluto medio (MAE), raíz del error cuadrático medio (RMSE) y error porcentual absoluto medio (MAPE), que permiten interpretar la calidad de las predicciones en distintas unidades y escalas.
+
+\subsection{Entrenamiento, validación y prueba}
+
+Para estimar la capacidad de generalización del modelo —es decir, su desempeño sobre datos no vistos durante el entrenamiento— se divide la serie en tres subconjuntos temporales disjuntos:
+\begin{itemize}
+    \item \textbf{Entrenamiento}: segmento inicial de la serie, usado para ajustar los parámetros del modelo.
+    \item \textbf{Validación}: segmento intermedio, usado para seleccionar hiperparámetros (por ejemplo, tamaño de historia, offsets de predicción, arquitectura del modelo) y para aplicar criterios de \emph{early stopping}.
+    \item \textbf{Prueba}: segmento final, reservado para evaluar el desempeño del modelo una vez fijados los hiperparámetros.
+\end{itemize}
+
+La división se realiza respetando el orden temporal de los datos, de modo que el modelo siempre se entrene en el pasado y se evalúe en el futuro, evitando fugas de información temporal.
+
+\section{Resumen del capítulo}
+
+En este capítulo se han establecido los elementos necesarios para describir con precisión el problema abordado en la memoria:
+\begin{itemize}
+    \item Se introdujo la notación básica para series de tiempo univariadas y multivariadas, distinguiendo explícitamente entre variables de entrada $\mathbf{x}_t$, variables objetivo $\mathbf{y}_t$ y timestamps $t$.
+    \item Se discutió la diferencia entre series equiespaciadas y no equiespaciadas, destacando las motivaciones para trabajar directamente con marcas de tiempo irregulares.
+    \item Se describió, a nivel general, el tipo de datos considerados en la memoria, distinguiendo entre escenarios sintéticos de validación controlada y datasets reales procesados usados en el benchmark principal.
+    \item Se formuló el problema de predicción como una tarea de aprendizaje supervisado basada en ventanas de historia finita y horizontes de predicción definidos mediante offsets sobre la secuencia original y timestamps reales.
+    \item Se describió el procedimiento para construir ejemplos supervisados a partir de la serie completa, incluyendo la posibilidad de usar longitudes de historia variables y un conjunto discreto de offsets de predicción.
+    \item Se presentó la función objetivo de entrenamiento y el esquema de partición temporal en conjuntos de entrenamiento, validación y prueba.
+\end{itemize}
+
+Sobre este marco se construirá, en los capítulos siguientes, la arquitectura Transformer propuesta para manejar timestamps no equiespaciados y realizar predicciones a distintos horizontes, junto con los experimentos que evalúan su desempeño.

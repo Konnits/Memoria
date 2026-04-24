@@ -1,0 +1,100 @@
+======================================================================
+REPORTE ESTADÍSTICO DE COMPARACIÓN DE MODELOS
+======================================================================
+
+RESUMEN POR MODELO (media ± std sobre datasets):
+                       Modelo  test_mse_mean  test_mse_std        test_mse  test_rmse_mean  test_rmse_std       test_rmse  test_mae_mean  test_mae_std        test_mae
+                       Custom       0.291416      0.057256 0.2914 ± 0.0573        0.537291       0.052015 0.5373 ± 0.0520       0.302336      0.063985 0.3023 ± 0.0640
+                 Custom-Large       0.354479      0.032094 0.3545 ± 0.0321        0.594770       0.026980 0.5948 ± 0.0270       0.360971      0.025743 0.3610 ± 0.0257
+                 Custom-Small       0.281172      0.062718 0.2812 ± 0.0627        0.527066       0.058072 0.5271 ± 0.0581       0.302999      0.070990 0.3030 ± 0.0710
+                   Custom-T2V       0.320611      0.000000 0.3206 ± 0.0000        0.566226       0.000000 0.5662 ± 0.0000       0.351343      0.000000 0.3513 ± 0.0000
+             Custom-T2V-Small       0.323513      0.000000 0.3235 ± 0.0000        0.568782       0.000000 0.5688 ± 0.0000       0.354089      0.000000 0.3541 ± 0.0000
+                       EncDec       0.342996      0.061149 0.3430 ± 0.0611        0.583294       0.052322 0.5833 ± 0.0523       0.372362      0.037901 0.3724 ± 0.0379
+                 EncDec-Large       0.823852      0.198867 0.8239 ± 0.1989        0.900926       0.110367 0.9009 ± 0.1104       0.723963      0.168415 0.7240 ± 0.1684
+EncDec-Large_FT_AR_Contiguous       1.024398      0.000000 1.0244 ± 0.0000        1.012125       0.000000 1.0121 ± 0.0000       0.894387      0.000000 0.8944 ± 0.0000
+     EncDec-Large_FT_AR_Mixed       1.030439      0.000000 1.0304 ± 0.0000        1.015106       0.000000 1.0151 ± 0.0000       0.900336      0.000000 0.9003 ± 0.0000
+    EncDec-Large_FT_AR_Random       1.027895      0.000000 1.0279 ± 0.0000        1.013850       0.000000 1.0138 ± 0.0000       0.897820      0.000000 0.8978 ± 0.0000
+                 EncDec-Small       0.329045      0.049773 0.3290 ± 0.0498        0.571985       0.043275 0.5720 ± 0.0433       0.359381      0.025658 0.3594 ± 0.0257
+EncDec-Small_FT_AR_Contiguous       0.490245      0.016786 0.4902 ± 0.0168        0.699790       0.011707 0.6998 ± 0.0117       0.436860      0.011895 0.4369 ± 0.0119
+     EncDec-Small_FT_AR_Mixed       0.493834      0.006757 0.4938 ± 0.0068        0.702434       0.005090 0.7024 ± 0.0051       0.460416      0.000385 0.4604 ± 0.0004
+    EncDec-Small_FT_AR_Random       0.527216      0.010262 0.5272 ± 0.0103        0.725463       0.006469 0.7255 ± 0.0065       0.483992      0.017727 0.4840 ± 0.0177
+      EncDec_FT_AR_Contiguous       0.499074      0.061747 0.4991 ± 0.0617        0.704237       0.042930 0.7042 ± 0.0429       0.473255      0.042244 0.4733 ± 0.0422
+           EncDec_FT_AR_Mixed       0.487806      0.053419 0.4878 ± 0.0534        0.696113       0.037032 0.6961 ± 0.0370       0.493095      0.048972 0.4931 ± 0.0490
+          EncDec_FT_AR_Random       0.506332      0.063574 0.5063 ± 0.0636        0.709661       0.044260 0.7097 ± 0.0443       0.499280      0.061798 0.4993 ± 0.0618
+                       Linear       0.319015      0.065292 0.3190 ± 0.0653        0.561726       0.058942 0.5617 ± 0.0589       0.358297      0.075162 0.3583 ± 0.0752
+                NoTargetToken       0.315198      0.061883 0.3152 ± 0.0619        0.558587       0.056100 0.5586 ± 0.0561       0.322475      0.066714 0.3225 ± 0.0667
+               NoTimeEncoding       0.319556      0.066127 0.3196 ± 0.0661        0.562120       0.059772 0.5621 ± 0.0598       0.323079      0.068698 0.3231 ± 0.0687
+                  Persistence       0.434336      0.147371 0.4343 ± 0.1474        0.644941       0.106220 0.6449 ± 0.1062       0.354679      0.118359 0.3547 ± 0.1184
+               STraTS_Adapter       0.296026      0.074134 0.2960 ± 0.0741        0.539853       0.067690 0.5399 ± 0.0677       0.300868      0.078454 0.3009 ± 0.0785
+
+
+--- Comparación emparejada: test_mse ---
+  Custom vs Custom-Large: Victorias 1/2, Mejora media: -0.7%, Wilcoxon p=0.750000
+  Custom vs Custom-Small: Victorias 0/5, Mejora media: -4.3%, Wilcoxon p=1.000000
+  Custom vs Custom-T2V: Victorias 0/1, Mejora media: -2.4%, Wilcoxon p=1.000000
+  Custom vs Custom-T2V-Small: Victorias 0/1, Mejora media: -1.5%, Wilcoxon p=1.000000
+  Custom vs EncDec: Victorias 3/3, Mejora media: 4.2%, Wilcoxon p=0.125000
+  Custom vs EncDec-Large: Victorias 2/2, Mejora media: 62.6%, Wilcoxon p=0.250000
+  Custom vs EncDec-Large_FT_AR_Contiguous: Victorias 1/1, Mejora media: 68.0%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Mixed: Victorias 1/1, Mejora media: 68.1%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Random: Victorias 1/1, Mejora media: 68.0%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small: Victorias 2/3, Mejora media: 0.7%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small_FT_AR_Contiguous: Victorias 2/2, Mejora media: 39.4%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Mixed: Victorias 2/2, Mejora media: 39.6%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Random: Victorias 2/2, Mejora media: 43.6%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Contiguous: Victorias 2/2, Mejora media: 40.2%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Mixed: Victorias 2/2, Mejora media: 38.9%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Random: Victorias 2/2, Mejora media: 41.0%, Wilcoxon p=0.250000
+  Custom vs Linear: Victorias 1/3, Mejora media: -0.9%, Wilcoxon p=0.875000
+  Custom vs NoTargetToken: Victorias 1/3, Mejora media: -1.9%, Wilcoxon p=0.875000
+  Custom vs NoTimeEncoding: Victorias 2/3, Mejora media: -0.8%, Wilcoxon p=0.500000
+  Custom vs Persistence: Victorias 4/4, Mejora media: 27.8%, Wilcoxon p=0.062500
+  Custom vs STraTS_Adapter: Victorias 2/4, Mejora media: -1.5%, Wilcoxon p=0.687500
+
+
+--- Comparación emparejada: test_rmse ---
+  Custom vs Custom-Large: Victorias 1/2, Mejora media: -0.3%, Wilcoxon p=0.750000
+  Custom vs Custom-Small: Victorias 0/5, Mejora media: -2.1%, Wilcoxon p=1.000000
+  Custom vs Custom-T2V: Victorias 0/1, Mejora media: -1.2%, Wilcoxon p=1.000000
+  Custom vs Custom-T2V-Small: Victorias 0/1, Mejora media: -0.8%, Wilcoxon p=1.000000
+  Custom vs EncDec: Victorias 3/3, Mejora media: 2.1%, Wilcoxon p=0.125000
+  Custom vs EncDec-Large: Victorias 2/2, Mejora media: 39.0%, Wilcoxon p=0.250000
+  Custom vs EncDec-Large_FT_AR_Contiguous: Victorias 1/1, Mejora media: 43.4%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Mixed: Victorias 1/1, Mejora media: 43.5%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Random: Victorias 1/1, Mejora media: 43.5%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small: Victorias 2/3, Mejora media: 0.3%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small_FT_AR_Contiguous: Victorias 2/2, Mejora media: 22.2%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Mixed: Victorias 2/2, Mejora media: 22.4%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Random: Victorias 2/2, Mejora media: 24.9%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Contiguous: Victorias 2/2, Mejora media: 22.6%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Mixed: Victorias 2/2, Mejora media: 21.7%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Random: Victorias 2/2, Mejora media: 23.2%, Wilcoxon p=0.250000
+  Custom vs Linear: Victorias 1/3, Mejora media: -0.4%, Wilcoxon p=0.875000
+  Custom vs NoTargetToken: Victorias 1/3, Mejora media: -0.9%, Wilcoxon p=0.875000
+  Custom vs NoTimeEncoding: Victorias 2/3, Mejora media: -0.4%, Wilcoxon p=0.500000
+  Custom vs Persistence: Victorias 4/4, Mejora media: 14.9%, Wilcoxon p=0.062500
+  Custom vs STraTS_Adapter: Victorias 2/4, Mejora media: -0.7%, Wilcoxon p=0.687500
+
+
+--- Comparación emparejada: test_mae ---
+  Custom vs Custom-Large: Victorias 1/2, Mejora media: -2.0%, Wilcoxon p=0.750000
+  Custom vs Custom-Small: Victorias 3/5, Mejora media: -0.4%, Wilcoxon p=0.500000
+  Custom vs Custom-T2V: Victorias 1/1, Mejora media: 0.0%, Wilcoxon p=0.500000
+  Custom vs Custom-T2V-Small: Victorias 1/1, Mejora media: 0.8%, Wilcoxon p=0.500000
+  Custom vs EncDec: Victorias 3/3, Mejora media: 5.2%, Wilcoxon p=0.125000
+  Custom vs EncDec-Large: Victorias 2/2, Mejora media: 51.5%, Wilcoxon p=0.250000
+  Custom vs EncDec-Large_FT_AR_Contiguous: Victorias 1/1, Mejora media: 60.7%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Mixed: Victorias 1/1, Mejora media: 61.0%, Wilcoxon p=0.500000
+  Custom vs EncDec-Large_FT_AR_Random: Victorias 1/1, Mejora media: 60.9%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small: Victorias 2/3, Mejora media: 2.1%, Wilcoxon p=0.500000
+  Custom vs EncDec-Small_FT_AR_Contiguous: Victorias 2/2, Mejora media: 23.2%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Mixed: Victorias 2/2, Mejora media: 27.1%, Wilcoxon p=0.250000
+  Custom vs EncDec-Small_FT_AR_Random: Victorias 2/2, Mejora media: 30.6%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Contiguous: Victorias 2/2, Mejora media: 28.8%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Mixed: Victorias 2/2, Mejora media: 31.5%, Wilcoxon p=0.250000
+  Custom vs EncDec_FT_AR_Random: Victorias 2/2, Mejora media: 32.1%, Wilcoxon p=0.250000
+  Custom vs Linear: Victorias 3/3, Mejora media: 9.8%, Wilcoxon p=0.125000
+  Custom vs NoTargetToken: Victorias 1/3, Mejora media: -0.2%, Wilcoxon p=0.875000
+  Custom vs NoTimeEncoding: Victorias 1/3, Mejora media: -0.2%, Wilcoxon p=0.875000
+  Custom vs Persistence: Victorias 3/4, Mejora media: 12.8%, Wilcoxon p=0.312500
+  Custom vs STraTS_Adapter: Victorias 3/4, Mejora media: 0.3%, Wilcoxon p=0.312500

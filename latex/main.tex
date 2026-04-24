@@ -1,0 +1,84 @@
+\documentclass[12pt,a4paper]{report}
+
+% Idioma y codificación
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Márgenes
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+
+% Matemáticas y otros
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{csquotes}
+\usepackage{float}
+
+% Ruta por defecto de las imágenes
+\graphicspath{{images/}}
+
+% Bibliografía (puedes ajustar el estilo a lo que te pidan)
+\usepackage[
+    backend=biber,
+    style=apa,
+    sorting=nyt
+]{biblatex}
+\DeclareLanguageMapping{spanish}{spanish-apa}
+\addbibresource{references/referencias.bib}
+
+\newcommand{\textttbreak}[1]{%
+  \begingroup
+  \ttfamily
+  \hyphenchar\font=`\-%
+  #1%
+  \endgroup
+}
+% Comandos y configuraciones propias
+\input{documents/config}
+\usepackage{hyperref}
+\begin{document}
+
+% ----- Portada y preliminares -----
+\include{documents/portada}
+\cleardoublepage
+
+\pagenumbering{roman}
+\setcounter{page}{1}
+
+\include{documents/resumen}
+\include{documents/abstract}
+\include{documents/agradecimientos}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+\cleardoublepage
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+% ----- Capítulos principales -----
+\include{documents/cap1_introduccion}
+\include{documents/cap2_estado_del_arte}
+\include{documents/cap3_series_tiempo_y_problema}
+\include{documents/cap4_transformers_series_tiempo}
+\include{documents/cap5_modelo_no_equiespaciado}
+\include{documents/cap6_experimentos}
+\include{documents/cap7_resultados_discusion}
+\include{documents/cap8_conclusiones_trabajo_futuro}
+
+% ----- Bibliografía -----
+\cleardoublepage
+\printbibliography
+
+% ----- Anexos -----
+\appendix
+
+\include{documents/anexoA_fundamentos_redes}
+\include{documents/anexoB_optimizadores_y_adam}
+\include{documents/anexoC_detalles_implementacion}
+\include{documents/anexoD_material_extra}
+
+\end{document}

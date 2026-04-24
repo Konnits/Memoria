@@ -1,0 +1,221 @@
+\documentclass{acmart}
+
+\title{Self-Supervised Transformer for Sparse and Irregularly Sampled Multivariate Clinical Time-Series}
+
+\author{Sindhu Tipirneni}
+\affiliation{%
+  \institution{Virginia Tech}
+  \city{Blacksburg, Virginia}
+  \country{USA}
+  \postcode{24061}
+}
+\email{tsaisindhura@vt.edu}
+
+\author{Chandan K Reddy}
+\affiliation{%
+  \institution{Virginia Tech}
+  \city{Arlington, Virginia}
+  \country{USA}
+  \postcode{22203}
+}
+\email{reddy@cs.vt.edu}
+
+\begin{document}
+
+\begin{abstract}
+Multivariate time-series data are frequently observed in critical care settings and are typically characterized by sparsity (missing information) and irregular time intervals. Existing approaches for learning representations in this domain handle these challenges by either aggregation or imputation of values, which in-turn suppresses the fine-grained information and adds undesirable noise/overhead into the machine learning model. To tackle this problem, we propose a Self-supervised Transformer for Time-Series (STraTS) model which overcomes these pitfalls by treating time-series as a set of observation triplets instead of using the standard dense matrix representation. It employs a novel Continuous Value Embedding technique to encode continuous time and variable values without the need for discretization. It is composed of a Transformer component with multi-head attention layers which enable it to learn contextual triplet embeddings while avoiding the problems of recurrence and vanishing gradients that occur in recurrent architectures. In addition, to tackle the problem of limited availability of labeled data (which is typically observed in many healthcare applications), STraTS utilizes self-supervision by leveraging unlabeled data to learn better representations by using time-series forecasting as an auxiliary proxy task. Experiments on real-world multivariate clinical time-series benchmark datasets demonstrate that STraTS has better prediction performance than state-of-the-art methods for mortality prediction, especially when labeled data is limited. Finally, we also present an interpretable version of STraTS which can identify important measurements in the time-series data. Our data preprocessing and model implementation codes are available at https://github.com/sindhura97/STraTS.
+\end{abstract}
+
+\begin{CCSXML>
+<ccs2012>
+ <concept>
+  <concept_id>10010140.10010221.10010240</concept_id>
+  <concept_desc>Computing methodologies~Neural networks</concept_desc>
+  <concept_significance>500</concept_significance>
+ </concept>
+ <concept>
+  <concept_id>10010140.10010221.10010255</concept_id>
+  <concept_desc>Computing methodologies~Transfer learning</concept_desc>
+  <concept_significance>300</concept_significance>
+ </concept>
+</ccs2012>
+\end{CCSXML>
+
+\ccsdesc[500]{Computing methodologies~Neural networks}
+\ccsdesc[300]{Computing methodologies~Transfer learning}
+
+\keywords{time-series, neural networks, deep learning, healthcare, transformer, self-supervised learning}
+
+\maketitle
+
+\noindent \textbf{ACM Reference Format:} \\
+Sindhu Tipirneni and Chandan K Reddy. 2022. Self-Supervised Transformer for Sparse and Irregularly Sampled Multivariate Clinical Time-Series. \textit{ACM Trans. Knowl. Discov. Data.} 1, 1 (February 2022), 18 pages. https://doi.org/10.1145/1122445.1122456
+
+\section{Introduction}
+Time-series data is routinely collected in various healthcare settings where different measurements are recorded for patients throughout their course of stay (See Figure 1 for an illustrative example). Predicting clinical outcomes like mortality, decompensation, length of stay, and disease risk from such complex multivariate time-series data can facilitate both effective management of critical care units and automatic personalized treatment recommendation for patients. The success of deep learning in image and text domains realized by convolutional and recurrent networks \cite{7, 28}, and Transformer models \cite{30} have inspired the application of these architectures to develop better prediction models for time-series data as well. However, time-series in the clinical domain portray a unique set of challenges that are described below.
+
+\begin{itemize}
+    \item \textbf{Missingness and Sparsity}: A patient's condition may demand observing only a subset of variables of interest. Thus, not all the variables are observed for every patient. Also, the observed time-series matrices are very sparse as some variables may be measured more frequently than others for a given patient.
+    \item \textbf{Irregular time intervals and Sporadicity}: Not all clinical variables are measured at regular time intervals. Thus, the measurements may occur sporadically in time depending on the underlying condition of the patient.
+    \item \textbf{Limited labeled data}: Patient-level clinical data is often expensive to obtain and labeled data subsets pertaining to a specific prediction task may be even more limited (for e.g., building a severity classifier for Covid-19 patients.)
+\end{itemize}
+
+A straight-forward approach to deal with irregular time intervals and missingness is to aggregate measurements into discrete time intervals and add missingness indicators, respectively. However, this suppresses important fine-grained information because the granularity of observed time-series may differ from patient to patient based on the underlying medical condition. Existing sequence models for clinical time-series [4] and other interpolation-based models [26] address this issue by including a learnable imputation or interpolation component. Such techniques add undesirable noise and extra overhead to the model which usually worsens as the time-series become increasingly sparse. These models rely on an effective imputation/interpolation scheme in order to achieve strong performance on the target task. But it is unreasonable to impute clinical variables without careful consideration of the domain knowledge about each variable which might be non-trivial to obtain.
+
+Considering these shortcomings, we design a framework that does not need to perform any such operations and directly builds a model \textit{based only on the observations that are available in the data}. Thus, unlike conventional approaches which view each time-series as a matrix of certain dimensions (\#features $\times$ \#time-steps), our model regards each time-series as a set of observation triplets (a triple containing time, variable, and value) without the necessity for aggregation or imputation. The proposed STraTS (acronym for \textbf{S}elf-supervised \textbf{T}ransformer for \textbf{T}ime-\textbf{S}eries) model embeds these triplets by using a novel Continuous Value Embedding (CVE) scheme to avoid the need for binning continuous values before embedding them. The use of CVE for representing the time dimension preserves the fine grained information which is lost when the time-axis is discretized. STraTS encodes contextual information of observation triplets using a Transformer-based architecture with multi-head attention. We choose this over recurrent neural network (RNN) architectures because the sequential nature of RNN models hinders parallel processing while the Transformer bypasses this by using self-attention to attend from every token to every other token in a single step.
+
+To build robust representations using limited labeled data, we employ self-supervision and develop a time-series forecasting task to pretrain STraTS. This enables learning generalized representations in the presence of limited labeled data and alleviates sensitivity to noise. Furthermore, interpretable models are usually preferred in healthcare but existing deep models for clinical time-series lack this component. Thus, we also propose an interpretable version of our model (I-STraTS) which slightly compromises on performance metrics but can identify important measurements in the input. Though we evaluate the proposed model only on binary classification tasks, our framework can also be utilized in other supervised and unsupervised settings, where learning robust and generalized representations of sparse and sporadic time-series is desired. The main contributions of our work can be summarized as follows.
+
+\begin{itemize}
+    \item Propose a Transformer-based architecture called STraTS for clinical time-series which addresses the unique challenges of missingness and sporadicity of such data by avoiding aggregation and imputation.
+    \item We Develop a novel Continuous Value Embedding (CVE) mechanism using a one-to-many feed-forward network to embed continuous times and measured values in order to preserve fine grained information.
+    \item Utilize forecasting as a self-supervision (proxy) task to leverage unlabeled data to learn more generalized and robust representations.
+    \item Propose an interpretable version of STraTS that can be used when interpretability is more desired compared to quantitative performance gains.
+    \item Demonstrate through an extensive set of experiments that the design choices of STraTS lead to a better performance compared to competitive baseline models for mortality prediction on two real-world clinical datasets.
+\end{itemize}
+
+The rest of this paper is organized as follows. In Section 2, we review relevant literature about tackling sparse and sporadic time-series data, and self-supervised learning. Section 3 formally defines the prediction problem and gives a detailed description of the architecture of STraTS along with the self-supervision approach. Section 4 presents experimental results comparing STraTS with various baselines and demonstrates the interpretability of I-STraTS with a case study. Finally, Section 5 concludes the paper and provides future directions.
+
+\section{RELATED WORK}
+\subsection{Clinical Time-Series}
+
+A straightforward approach to address missing values and irregular time intervals is to impute and aggregate the time-series, respectively, before feeding them to a classifier \cite{5,20}. However, such classifiers ignore the missingness in the data which can be quite informative. Lipton et al. \cite{21} show that phenotyping performance can be improved by passing missingness indicators as additional features to an RNN classifier. But they still lose fine-grained information by aggregating each time-series into hourly intervals.
+
+Several early works rely on Gaussian Processes (GP) \cite{24} to model irregular time-series. For example, Lu et al. \cite{23} represent each time-series as a smooth curve in a reproducing kernel Hilbert space (RKHS) using GP by optimizing GP parameters using Expectation Maximization (EM), and then derive a distance measure on the RKHS which is used to define the SVM classifier's kernel. To account for uncertainty in GP, Li and Marlin [18] formulate the kernel by applying an uncertainty-aware base kernel (called the expected Gaussian kernel) to a series of sliding windows. These works take a two-step approach by first optimizing GP parameters and then training the classification model. To enable end-to-end training, Li and Marlin [19] again represent time-series using GP posterior at predefined time points but use the reparametrization trick to back-propagate the gradients through a black-box classifier (learnable by gradient-descent) into the GP model. The end-to-end model is uncertainty-aware as the output is formulated as a random variable. Futoma et al. [11] extend this idea to multivariate time-series with the help of multitask GP [3] to consider inter-variable similarities. Though Gaussian Processes provide a systematic way to deal with uncertainty, they are expensive to learn and their flexibility is limited by the choice of covariance and mean functions.
+
+Shukla and Marlin [26] also propose an end-to-end method that constitutes interpolation and classification networks stacked in a sequence. They develop learnable interpolation layers to approximate the time-series at regular predefined time points in a deterministic fashion (unlike GP-based methods) and allow information sharing across both time and variable dimensions. However, the input to the classifier is a densely interpolated multivariate time-series which causes loss of information if the number of interpolation points is small and slows down computations while adding noise otherwise.
+
+Instead of using a separate interpolation module followed by a traditional classifier, other approaches modify traditional recurrent architectures for clinical time-series to deal with missing values and/or irregular time intervals. For example, Baytas et al. [2] developed a time-aware long-short term memory (T-LSTM) which is a modification of the LSTM cell to adjust the hidden state according to the irregular time gaps. ODE-RNN [25] uses ODEs to model the continuous-time dynamics of the hidden state while also updating the hidden state at each observed time point using a standard GRU cell. The GRU-D model [4] is a modification of the GRU cell which decays inputs (to global means) and hidden states through unobserved time intervals. DATA-GRU [29], in addition to decaying the GRU hidden state according to elapsed time, also employs a dual attention mechanism based on missingness and imputation reliability to process inputs before feeding them to a GRU cell. All these methods use an RNN with sequence length being the number of unique timestamps in the input, which can be quite large for irregular time-series, and as a result, can slow down computations.
+
+The imputation/interpolation schemes in the models discussed above can lead to excessive computations and unnecessary noise particularly when missing rates are quite high. Our model is designed to circumvent this issue by representing sparse and irregular time-series as a set of observations. Horn et al. [13] develop SeFT with a similar idea and use a parametrized set function for classification. The attention-based aggregation used in SeFT contains the same queries for all observations to facilitate low memory and time complexity while compromising on accuracy. The initial embedding in SeFT contains fixed time encodings while our approach uses learnable embeddings for all the three components (time, variable, value) of the observation triplet.
+
+The challenge of training in scenarios with limited labeled data still remains. In order to address this issue, we turn towards self-supervision for a better utilization of the available data to learn effective representations.
+
+\subsection{Self-supervised Learning}
+Supervised deep learning models often rely on large amounts of labeled data to learn generalized and robust representations. Limited labeled data can make the model easily overfit to training data and make the model more sensitive to noise. Since labeled data is expensive to obtain, self-supervised learning was introduced as a technique to solve this challenge. This technique trains the model on carefully constructed proxy tasks that improve the model's performance on target prediction tasks. The labeled datasets for proxy tasks are obtained from the unlabeled data in an inexpensive semi-automatic process. Yann Le Cunn\footnote{https://drive.google.com/file/d/1r-mDL4IX\_hzZLDBKp8\_e8VZqD7fOzBkF/view} describes self-supervised learning as to "predict any part of the input from any other part". Self-supervised learning enables the model to learn correlations in input data which enhance the model's learning of supervised target prediction tasks. Liu et al. [22] review the state-of-the-art self-supervised learning methods in computer vision, natural language processing, and graph representation learning. Though this technique has shown great performance boosts with image [15] and text [9, 31] data, its application to time-series data has been limited. One such effort is made by Jawed et al. [14] which uses a 1D CNN for dense univariate time-series classification and shows increased accuracy by using forecasting as an additional task in a multi-task learning framework. Zerveas et al. [33] pretrained a Transformer model using a denoising objective and showed improved performance on regression and classification tasks with dense multivariate time-series. In our work, we demonstrate time-series forecasting as a viable and effective self-supervision task for a Transformer model. Our work is the first to explore self-supervised learning in the context of sparse and irregular multivariate time-series.
+
+\section{PROPOSED APPROACH}
+In this section, we describe our STraTS model by first introducing the problem with relevant notation and definitions and then explaining the different components of the model which are illustrated in Figure 3.
+
+\subsection{Problem Definition}
+As stated in the previous sections, STraTS represents each time-series as a set of observation triplets. Formally, an \textit{observation triplet} is defined as a triple $(t, f, v)$ where $t \in \mathbb{R}_{\geq 0}$ is the time, $f \in \mathcal{F}$ is the feature/variable, and $v \in \mathbb{R}$ is the value of the observation. A \textit{multivariate time-series} $\mathbf{T}$ of length $n$ is a defined as a set of $n$ observation triplets i.e., $\mathbf{T} = \{(t_i, f_i, v_i)\}_{i=1}^n$.
+
+Consider a dataset $\mathcal{D} = \{(\mathbf{d}^k, \mathbf{T}^k, y^k)\}_{k=1}^N$ with $N$ labeled samples, where the $k^{th}$ sample contains a demographic vector $\mathbf{d}^k \in \mathbb{R}^D$, a multivariate time-series $\mathbf{T}^k$, and a corresponding binary label $y^k \in \{0, 1\}$. In this work, each sample corresponds to a single ICU stay where several clinical variables of the patient are measured at irregular time intervals and the binary label indicates in-hospital mortality. The underlying set of time-series variables denoted by $\mathcal{F}$ may include vitals (such as temperature), lab measurements (such as hemoglobin), and input/output events (such as fluid intake and urine output). Thus, the \textit{target task} aims to predict $y^k$ given $(\mathbf{d}^k, \mathbf{T}^k)$.
+
+Our model also incorporates forecasting as a self-supervision task. For this task, we consider a bigger dataset with $N' \geq N$ samples given by $\mathcal{D}' = \{(\mathbf{d}^k, \mathbf{T}^k, \mathbf{m}^k, \mathbf{z}^k)\}_{k=1}^{N'}$. Here, $\mathbf{m}^k \in \{0, 1\}^{|\mathcal{F}|}$ is the forecast mask which indicates whether each variable was observed in the forecast window and $\mathbf{z}^k \in \mathbb{R}^{|\mathcal{F}|}$ contains the corresponding variable values when observed. The forecast mask is necessary because the unobserved forecasts cannot be used in training and are hence masked out in the loss function. The time-series in this dataset are obtained from both the labeled and unlabeled time-series by considering different observation windows. Figure 2 illustrates the construction of inputs and outputs for the target task and forecasting task.
+
+\subsection{Architecture of STraTS}
+The architecture of STraTS is illustrated in Figure 3. Unlike most of the existing approaches which take a time-series matrix as input, STraTS \textit{defines its input as a set of observation triplets}. Each observation triplet in the input is embedded using the Initial Triplet Embedding module. The initial triplet embeddings are then passed through a Contextual Triplet Embedding module which utilizes the Transformer architecture to encode the context for each triplet. The Fusion Self-attention module then combines these contextual embeddings via self-attention mechanism to generate an embedding for the input time-series which is concatenated with demographics embedding and passed through a feed-forward network to make the final prediction. The notations used in the paper are summarized in Table 1.
+
+\subsubsection{Initial Triplet Embedding}
+Given an input time-series $\mathbf{T} = \{(t_i, f_i, v_i)\}_{i=1}^n$, the initial embedding for the $i^{th}$ triplet $\mathbf{e}_i \in \mathbb{R}^d$ is computed by summing the following component embeddings: (i) \textit{Feature embedding} $\mathbf{e}_i^{\text{f}} \in \mathbb{R}^d$, (ii) \textit{Value embedding} $\mathbf{e}_i^{\text{v}} \in \mathbb{R}^d$, and (iii) \textit{Time embedding} $\mathbf{e}_i^{\text{t}} \in \mathbb{R}^d$. In other words, $\mathbf{e}_i = \mathbf{e}_i^{\text{f}} + \mathbf{e}_i^{\text{v}} + \mathbf{e}_i^{\text{t}} \in \mathbb{R}^d$. Feature embeddings $\mathbf{e}^{\text{f}}(\cdot)$ are obtained from a simple lookup table similar to word embeddings. Since feature values and times are continuous unlike feature names which are categorical objects, we cannot use a lookup table to embed these continuous values unless they are categorized. Some researchers [30, 32] have used sinusoidal encodings to embed continuous values. We propose a novel continuous value embedding (CVE) technique using a one-to-many Feed-Forward Network (FFN) with learnable parameters i.e., $\mathbf{e}_i^v = FFN^v(v_i)$, and $\mathbf{e}_i^t = FFN^t(t_i)$.
+
+Both FFNs have one input neuron and $d$ output neurons and a single hidden layer with $\lfloor \sqrt{d} \rfloor$ neurons and $\tanh(\cdot)$ activation. They are of the form $FFN(x) = U \tanh(Wx + b)$ where the dimensions of weights $\{W, b, U\}$ can be inferred from the size of hidden and output layers of the FFN. Unlike sinusoidal encodings with fixed frequencies, this technique offers more flexibility by allowing end-to-end learning of continuous value and time embeddings without the need to categorize them.
+
+\subsubsection*{3.2.2 Contextual Triplet Embedding.}
+The initial triplet embeddings $\{\mathbf{e}_1, ..., \mathbf{e}_n\}$ are then passed through a Transformer architecture [30] with $M$ blocks, each containing a Multi-Head Attention (MHA) layer with $h$ attention heads and a FFN with one hidden layer. Each block takes $n$ input embeddings $\mathbf{E} \in \mathbb{R}^{n \times d}$ and outputs the corresponding $n$ output embeddings $\mathbf{C} \in \mathbb{R}^{n \times d}$ that capture the contextual information. MHA layers use multiple attention heads to attend to information contained in different embedding projections in parallel. The computations of the MHA layer are given by
+\begin{align}
+\mathbf{H}_j &= softmax \left( \frac{(\mathbf{E}\mathbf{W}_j^q)(\mathbf{E}\mathbf{W}_j^k)^T}{\sqrt{d/h}} \right) (\mathbf{E}\mathbf{W}_j^v) \quad j = 1, ..., h \label{eq:1} \\
+MHA(\mathbf{E}) &= (\mathbf{H}_1 \circ ... \circ \mathbf{H}_h) \mathbf{W}_c \label{eq:2}
+\end{align}
+Each head projects the input embeddings into query, key, and value subspaces using matrices $\{\mathbf{W}_j^q, \mathbf{W}_j^k, \mathbf{W}_j^v\} \subset \mathbb{R}^{d \times d_h}$. The queries and keys are then used to compute the attention weights which are used to compute weighted averages of value (different from value in observation triplet) vectors. Finally, the outputs of all heads are concatenated and projected to original dimension with $\mathbf{W}_c \in \mathbb{R}^{hd_h \times d}$. The FFN layer takes the form
+\begin{equation}
+    \mathbf{F}(\mathbf{X}) = ReLU(\mathbf{X}\mathbf{W}_1^f + \mathbf{b}_1^f)\mathbf{W}_2^f + \mathbf{b}_2^f
+\end{equation}
+with weights $\mathbf{W}_1^f \in \mathbb{R}^{d \times 2d}$, $\mathbf{b}_1^f \in \mathbb{R}^{2d}$, $\mathbf{W}_2^f \in \mathbb{R}^{2d \times d}$, $\mathbf{b}_2^f \in \mathbb{R}^d$. Dropout, residual connections, and layer normalization are added for every MHA and FFN layer. Also, attention dropout randomly masks out some positions in the attention matrix before the softmax computation during training. The output of each block is fed as input to the succeeding one, and the output of the last block gives the contextual triplet embeddings $\{\mathbf{c}_1, ..., \mathbf{c}_n\}$.
+
+\subsubsection*{3.2.3 Fusion Self-attention}
+After computing contextual embeddings using a Transformer, we fuse them using a self-attention layer to compute time-series embedding $\mathbf{e}^T \in \mathbb{R}^d$. This layer first computes attention weights $\{\alpha_1, ..., \alpha_n\}$ by passing each contextual embedding through a FFN and computing a softmax over all the FFN outputs.
+\begin{align}
+    a_i &= \mathbf{u}_a^T \mathrm{tanh}(\mathbf{W}_a\mathbf{c}_i + \mathbf{b}_a) \\
+    \alpha_i &= \frac{\mathrm{exp}(a_i)}{\sum_{j=1}^n \mathrm{exp}(a_j)} \quad \forall i = 1, ..., n
+\end{align}
+$\mathbf{W}_a \in \mathbb{R}^{d_a \times d}$, $\mathbf{b}_a \in \mathbb{R}^{d_a}$, $\mathbf{u}_a \in \mathbb{R}^{d_a}$ are the weights of this attention network which has $d_a$ neurons in the hidden layer. The time-series embedding is then computed as
+\begin{equation}
+    \mathbf{e}^T = \sum_{i=1}^n \alpha_i \mathbf{c}_i
+\end{equation}
+
+\subsubsection*{3.2.4 Demographics Embedding}
+We realize that demographics can be encoded as triplets with a default value for time. However, we found that the prediction models performed better in our experiments when demographics are processed separately by passing $\mathbf{d}$ through a FFN as shown below. The demographics embedding is thus obtained as
+\begin{equation}
+\mathbf{e}^d = tanh(\mathbf{W}_2^d \, tanh(\mathbf{W}_1^d \mathbf{d} + \mathbf{b}_1^d) + \mathbf{b}_2^d) \in \mathbb{R}^d
+\end{equation}
+where the hidden layer has a dimension of $2d$.
+
+\subsubsection*{3.2.5 Prediction Head}
+The final prediction for target task is obtained by passing the concatenation of demographics and time-series embeddings through a dense layer with weights $\mathbf{w}_o^T \in \mathbb{R}^d, b_o \in \mathbb{R}$ and sigmoid activation.
+\begin{equation}
+\tilde{y} = sigmoid(\mathbf{w}_o^T [\mathbf{e}^d \circ \mathbf{e}^T] + b_o)
+\end{equation}
+The model is trained on the target task using cross-entropy loss.
+
+\subsubsection*{3.2.6 Self-supervision}
+We experimented with both masking and forecasting as pretext tasks for providing self-supervision and found that forecasting improved the results on target tasks. The forecasting task uses the same architecture as the target task except for the prediction layer i.e.,
+\begin{equation}
+\tilde{\mathbf{z}} = \mathbf{W}_s [\mathbf{e}^d \circ \mathbf{e}^T] + \mathbf{b}_s \in \mathbb{R}^{|\mathcal{F}|}
+\end{equation}
+A masked MSE loss is used for training on the forecasting task to account for missing values in the forecast outputs. Thus, the loss for self-supervision is given by
+\begin{equation}
+\mathcal{L}_{ss} = \frac{1}{|N'|} \sum_{k=1}^{N'} \sum_{j=1}^{|\mathcal{F}|} m_j^k (\tilde{z}_j^k - z_j^k)^2
+\end{equation}
+where $\mathbf{m}_j^k = 1$ (or $\mathbf{m}_j^k = 0$) if the ground truth forecast $\mathbf{z}_j^k$ is available (or unavailable) for $j^{th}$ variable in $k^{th}$ sample. The model is first pretrained on the self-supervision task and is then fine-tuned on the target task.
+
+\subsection*{3.3 Interpretability}
+We also propose an interpretable version of our model which we refer to as I-STraTS. Inspired by Choi et al. [6] and Zhang et al. [34], we alter the architecture of STraTS in such a way that the output can be expressed using a linear combination of components that are derived from individual features. Specifically, the output of I-STraTS is formulated as
+\begin{equation}
+\tilde{y} = sigmoid\left(\mathbf{w}_o^T \left[\mathbf{d} \circ \sum_{i=1}^n \alpha_i \mathbf{e}_i\right] + b_o\right)
+\end{equation}
+Contrary to STraTS, (i) we combine the initial triplet embeddings using the attention weights in Fusion Self-attention module, and (ii) directly use the raw demographics vector as the demographics embedding. The above equation can also be written as
+\begin{equation}
+\tilde{y} = sigmoid\left(\sum_{j=1}^D \mathbf{w}_o[j] \mathbf{d}[j] + \sum_{i=1}^n \sum_{j=1}^d \alpha_i \mathbf{w}_o[j+D] \mathbf{e}_i[j] + b_o\right)
+\end{equation}
+Thus, we assign a `contribution score' to the $j^{th}$ demographic feature as $\mathbf{w}_o[j]\mathbf{d}[j]$ and to the $i^{th}$ time-series observation as $\sum_{j=1}^d \alpha_i \mathbf{w}_o[j+D] \mathbf{e}_i[j]$.
+
+\section{EXPERIMENTS}
+We evaluated our proposed STraTS model against state-of-the-art baselines on two real-world EHR databases for the mortality prediction task. This section starts with a description of the datasets and baselines, followed by a discussion of results focusing on generalization and interpretability.
+
+\subsection{Datasets}
+We experiment with time-series extracted from two real-world EHR datasets which are described below. The dataset statistics are summarized in Table 2.
+
+\textbf{MIMIC-III [16]}: This is a publicly available database containing medical records of about 46$k$ critical care patients in Beth Israel Deaconess Medical Center between 2001 and 2012. We filtered ICU stays to include only adult patients and extracted 129 features from the following tables: input events, output events, lab events, chart events, and prescriptions for each ICU stay. For mortality prediction task, we only include ICU stays that lasted for atleast one day with the patient alive at the end of first day, and predict in-hospital mortality using the first 24 hours of data. For forecasting, the set of observation windows is defined (in hours) as $\{[min(0, x - 24), x) \mid 20 \leq x \leq 124, x\%4 = 0\}$ and the prediction window is the 2-hour period following the observation window. Note that we only consider those samples which have atleast one time-series measurement in both observation and prediction windows. The data is split at patient level into training, validation, and test sets in the ratio $64 : 16 : 20$.
+
+\textbf{PhysioNet Challenge 2012 [12]}: This processed dataset from Physionet Challenge 2012 \footnote{https://physionet.org/content/challenge-2012/1.0.0/} contains records of 11,988 ICU stays of adult patients. The target task aims to predict in-hospital mortality given the first 48 hours of data for each ICU stay. Since demographic variables `gender' and `height' are not available for all ICU stays, we perform mean imputation and add missingness indicators for them as additional demographic variables. To generate inputs and outputs for forecasting, the set of observation windows is defined (in hours) as $\{[0, x) \mid 12 \leq x \leq 44, x\%4 = 0\}$ and the prediction window is the 2-hour period following the observation window. The data from set-b and set-c together is split into training and validation (80:20) while set-a is used for testing.
+
+\subsection{Baseline Methods}
+To demonstrate the effectiveness of STraTS over the state-of-the-art methods, we compare it with the following baseline models.
+\begin{itemize}
+    \item \textbf{Gated Recurrent Unit (GRU)} [7]: The input is a time-series matrix with hourly aggregation where missing variables are mean-imputed. Binary missingness indicators and time since the last observation of each variable are also included as additional features at each time step. The final hidden state is transformed by a dense layer to generate output.
+    \item \textbf{Temporal Convolutional Network (TCN)} [1]: This model takes the same input as GRU which is passed through a stack of temporal convolution layers with residual connections. The representation from the last time step of the last layer is transformed by a dense layer to generate output.
+    \item \textbf{Simply Attend and Diagnose (SaND)} [27]: This model also has the same input representation as GRU and the input is passed through a Transformer with causal attention and a dense interpolation layer.
+    \item \textbf{GRU with trainable Decays (GRU-D)} [4]: The GRU-D cell takes a vector of variable values at each time one or more measurements are seen. The GRU-D cell, which is a modification to the GRU cell, decays unobserved values in this vector to global mean values and also adjusts the hidden state according to elapsed times since the last observation of each variable.
+    \item \textbf{Interpolation-prediction Network (InterpNet)} [26]: This model consists of a semi-parametric interpolation network that interpolates all variables at regular predefined time points, followed by a prediction network which is a GRU. It also uses a reconstruction loss to enhance the interpolation network. The input representation is similar to that of GRU-D and therefore, no aggregation is performed.
+    \item \textbf{Set Functions for Time Series (SeFT)} [13]: This model also inputs a set of observation triplets, similar to STraTS. It uses sinusoidal encodings to embed times and the deep network used to combine the observation embeddings is formulated as a set function using a simpler but faster variation of multi-head attention.
+\end{itemize}
+
+For all the baselines, we use two dense layers to get the demographics encoding and concatenate it to the time-series representation before the last dense layer. All the baselines use sigmoid activation at the last dense layer for mortality prediction. The time-series measurements (by variable) and demographics vectors are normalized to have zero mean and unit variance. All models are trained using the Adam optimizer [17].
+
+\subsection{Evaluation Metrics}
+The following metrics are used to quantitatively compare the baselines and proposed models for the binary classification task of mortality prediction. (i) \textbf{ROC-AUC}: Area under ROC curve. (ii) \textbf{PR-AUC}: Area under precision-recall curve. (iii) \textbf{min(Re, Pr)}: This metric is computed as the maximum of `minimum of recall and precision' across all thresholds.
+
+\subsection{Implementation Details}
+Table 3 lists the hyperparameters used in the experiments for all models for MIMIC-III and PhysioNet-2012 datasets. All models are trained using a batch size of 32 with Adam optimizer and training is stopped when sum of ROC-AUC and PR-AUC does not improve for 10 epochs. For pretraining phase using the self-supervision task, the patience is set to 5 epochs and epoch size is set to 256,000 samples. For MIMIC-III dataset, we set the maximum number of time-steps for GRU-D and InterpNet, and the maximum no. of observations for STraTS using the $99^{th}$ percentile for the same. This is done to avoid memory overflow with batch gradient descent. The deep models are implemented using keras with tensorflow backend. For InterpNet, we adapted the official code from https://github.com/mllds-lab/interp-net. For GRU-D and SeFT, we borrowed implementations from https://github.com/BorgwardtLab/Set\_Functions\_for\_Time\_Series. The experiments are conducted on a single NVIDIA GRID P40-12Q GPU. Our implementation and data-processing codes for STraTS are available at https://github.com/sindhura97/STraTS.
+
+\subsection*{4.5 Prediction Performance}
+
+We train each model using 10 different random samplings of 50\% labeled data from the train and validation sets. Note that STraTS uses the entire labeled data and additional unlabeled data (if available) for self-supervision. Table 4 shows the results for mortality prediction on MIMIC-III and PhysioNet-2012 datasets which are averaged over the 10 runs. STraTS achieves the best performance on all metrics, improving PR-AUC by 3.2\% and 3.5\% on MIMIC-III and PhysioNet-2012 datasets over the best baseline, respectively. This shows that our design choices of triplet embedding, attention-based architecture, and self-supervision enable STraTS to learn better representations. We expected the interpolation-based models GRU-D and InterpNet to outperform the simpler models GRU, TCN, and SaND. This was true for all cases except that GRU showed a better performance than GRU-D and InterpNet on the MIMIC-III dataset, for reasons that are unclear.
+
+To test the generalization ability of different models, we evaluate STraTS and the baseline models by training them on varying percentages of labeled data. Lower proportions of labeled data can be observed in real-world when there are several right-censored samples. Figures 4 and 5 show the results for MIMIC-III and PhysioNet-2012 datasets, respectively. The performance of all models degrades with reduced amount of labeled data. But STraTS is seen to have a crucial advantage compared to other models in scarce labeled data settings which can be attributed to self-supervision.
+
+\subsection{Ablation Study}
+We compared the predictive performance of STraTs and I-STraTS, with and without self-supervision and the results are reported in Table 5. `ss+' and `ss-' are used to refer to models trained with and without self-supervision, respectively. We observe that (i) Adding interpretability to STraTS slightly reduces the prediction scores as a result of constraining model representations. (ii) Adding self-supervision improves performance of both STraTS and I-STraTS. (iii) I-STraTS(ss+) outperforms STraTS(ss-) on all metrics on MIMIC-III dataset, and on the PR-AUC metric for PhysioNet-2012 dataset. This demonstrates that the performance drop from introducing interpretability can be compensated by the performance improvements obtained through self-supervision.
+
+\subsection{Interpretability}
+To illustrate how I-STraTS explains its predictions, we present a case study for an 85 year old female patient from the MIMIC-III dataset who expired on the $6^{th}$ day after ICU admission. The I-STraTS model predicts the probability of her in-hospital mortality as 0.94 using only the data collected on the first day. The patient had 380 measurements corresponding to 58 time-series variables. The top 5 variables ordered by their average `contribution score' along with the range (for multiple observations) or value (for only one observation) are shown in Table 6. In addition to old age, we can also observe that I-STraTS considers the abnormal values of Lactate, LDH, Platelet count, and RDW as the most important factors in predicting that the patient is at high risk of mortality. The discharge summary for this patient indicates PEA arrest as the cause of death. Elevated Lactate and LDH levels as seen in this case are known to be associated with cardiac arrest [8, 10]. Such predictions can not only guide the care givers in identifying high-risk patients for better resource allocation but also guide the clinicians into understanding the contributing factors and make better diagnoses and treatment choices, especially at the early stages of treatment before the condition becomes more severe and uncontrollable.
+
+To obtain a more fine-grained intuition, the observed time-series for some variables in this ICU stay are plotted in Figure 6 along with the corresponding contribution scores. It is interesting to see that the contribution scores appear to be positively or negatively correlated with the underlying values or time for several variables. For example, the model gives more weight to higher values of Lactate and LDH that are linked to cardiac arrest which is the patient's cause of death. Similarly, the model pays more attention to increased blood glucose of 210 mg/dL. As GCS-verbal remains at a constant low of 1, the model gives it more and more weight as time progresses.
+
+\section*{5 CONCLUSION}
+
+We proposed a Transformer-based model, STraTS, for prediction tasks on multivariate clinical time-series to address the challenges faced by existing methods in this domain. Our approach of using observation triplets as time-series components avoids the problems faced by aggregation and imputation methods for sparse and sporadic multivariate time-series. We used a novel CVE technique which uses parameterized embeddings for continuous values and a multi-head attention to learn contextual representations. The self-supervision task of forecasting using unlabeled data enables STraTS to learn more generalized representations, thus outperforming state-of-the-art baselines. In addition, we also showed that STraTS generalizes well even when labeled data is scarce and is also more robust to noise compared to existing methods. We also proposed an interpretable version of STraTS, called I-STraTS, for which self-supervision compensates the drop in prediction performance from introducing interpretability. This work can motivate other researchers to explore more self-supervision tasks for clinical time-series data. Along with exploring more self-supervision
+
+\end{document}

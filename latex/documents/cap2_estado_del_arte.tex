@@ -1,0 +1,243 @@
+\chapter{Estado del arte}
+\label{cap:estado-del-arte}
+
+En este capítulo se revisan los principales enfoques para modelar series de tiempo con marcas de tiempo irregulares, tanto para tareas de \emph{forecasting} como de clasificación. El objetivo es situar la propuesta de esta memoria dentro del contexto de la literatura reciente, destacando las ventajas y limitaciones de cada familia de modelos, y las brechas que motivan el modelo basado en \Transformers\ descrito en los capítulos siguientes.
+
+\section{Modelos clásicos para series de tiempo irregulares}
+\label{sec:estado-arte-clasicos}
+
+\subsection{Regularización e imputación sobre una malla equiespaciada}
+
+Una estrategia ampliamente utilizada para tratar series no equiespaciadas consiste en transformar el problema a un escenario equiespaciado. Típicamente se elige una malla temporal fija (por ejemplo, cada 5 o 15 minutos) y se aplica alguna combinación de:
+\begin{itemize}
+    \item \textbf{Re-muestreo} (\textit{resampling}) de las observaciones al grid objetivo.
+    \item \textbf{Imputación} de valores faltantes mediante métodos simples (cero, promedio, \textit{forward/backward fill}) o técnicas más avanzadas (interpolación, imputación múltiple, \textit{splines}, \emph{kalman smoothing}, etc.).
+\end{itemize}
+
+Sobre la serie regularizada se aplican luego modelos estándar como ARIMA, modelos de suavizamiento exponencial, redes recurrentes o \Transformers\ para datos equiespaciados. Esta aproximación es sencilla de implementar y permite reutilizar modelos consolidados; sin embargo, presenta limitaciones relevantes:
+\begin{itemize}
+    \item La elección del paso de malla introduce un \textbf{compromiso} entre resolución temporal y costo computacional.
+    \item La imputación puede introducir \textbf{sesgos} sistemáticos cuando la irregularidad está asociada a la dinámica del sistema (por ejemplo, muestreo más denso durante eventos anómalos).
+    \item Se pierde la posibilidad de formular horizontes de predicción directamente en tiempo continuo (por ejemplo, ``15 minutos'', ``1 hora'') de manera consistente con los \emph{timestamps} originales.
+\end{itemize}
+
+Estas limitaciones motivan el desarrollo de modelos que trabajen directamente con tiempos continuos y sean capaces de manejar observaciones irregulares sin necesidad de re-muestreo agresivo.
+
+\subsection{Modelos en tiempo continuo: CARMA y modelos de espacio de estados}
+
+En el ámbito estadístico, una primera familia de modelos que trata de manera explícita el tiempo continuo son los procesos \textbf{CARMA} (\emph{Continuous-time AutoRegressive Moving Average}) \cite{brockwell2001continuous,brockwell2001levy}. De forma análoga a los modelos ARMA discretos, los CARMA describen la evolución de un proceso estocástico mediante ecuaciones diferenciales lineales con ruido gaussiano, lo que permite modelar datos observados a tiempos irregulares sin re-muestreo explícito. La representación en espacio de estados facilita la inferencia mediante filtros y suavizadores de Kalman en tiempo continuo, y la evaluación de la verosimilitud para observaciones registradas en instantes arbitrarios.
+
+\hfill
+
+Los modelos en espacio de estados continuos se han extendido a escenarios más generales (por ejemplo, procesos de difusión o modelos con parámetros dependientes del tiempo), pero siguen siendo mayoritariamente \textbf{lineales y gaussianos}. Esto limita su capacidad para capturar dinámicas altamente no lineales, frecuentes en aplicaciones industriales o biomédicas. Además, la extensibilidad a series multivariadas de alta dimensión suele implicar matrices de gran tamaño y costos de cómputo elevados.
+
+\subsection{Procesos gaussianos para series irregulares}
+
+Los \textbf{procesos gaussianos} (GP) constituyen otra herramienta probabilística natural para modelar series de tiempo irregulares, ya que la función de covarianza se evalúa directamente sobre los \emph{timestamps} reales \cite{williams2006gaussian}. Un GP define, para cualquier conjunto finito de instantes $\{t_1,\dots,t_T\}$, una distribución multivariada gaussiana
+\[
+    (y(t_1),\dots,y(t_T)) \sim \mathcal{N}(m, K),
+\]
+donde $K_{ij} = k(t_i,t_j)$ está determinada por un \emph{kernel} que codifica supuestos de suavidad, periodicidad o escala temporal.
+
+Esta formulación tiene varias ventajas:
+\begin{itemize}
+    \item Maneja \textbf{directamente} muestreo irregular: basta con evaluar el kernel en los tiempos observados.
+    \item Proporciona \textbf{predicciones probabilísticas} (medias e intervalos de confianza) para cualquier tiempo futuro.
+    \item Permite incorporar conocimiento de dominio mediante el diseño de kernels específicos (por ejemplo, kernels periódicos o \emph{quasi-periodic}).
+\end{itemize}
+
+Sin embargo, la complejidad cúbica $O(T^3)$ en el número de observaciones limita el uso de GP exactos en series largas. Aunque existen aproximaciones escalables basadas en \emph{inducing points}, estructuras de kernel especiales o submuestreo, el uso de GP puros en escenarios de alta frecuencia y larga duración sigue siendo desafiante, y la extensión a múltiples variables y tareas complejas (clasificación secuencial, detección de eventos) requiere diseños cuidadosos.
+
+\section{Aprendizaje profundo para series de tiempo irregulares}
+\label{sec:estado-arte-deep}
+
+En la última década, los modelos de aprendizaje profundo han ganado protagonismo en el análisis de series de tiempo, tanto regulares como irregulares. A continuación se revisan tres líneas principales: (i) redes recurrentes con conocimiento explícito del tiempo, (ii) modelos en tiempo continuo basados en ecuaciones diferenciales, y (iii) modelos híbridos que combinan ideas de ambos mundos.
+
+\subsection{Redes recurrentes con manejo explícito de tiempo y \emph{missingness}}
+
+Las \textbf{redes recurrentes} (RNN), incluyendo variantes como LSTM y GRU \cite{hochreiter1997long,gers2000learning,cho2014learning,chung2014empirical}, son naturalmente adecuadas para procesar secuencias de longitud variable. Sin embargo, en su versión estándar asumen un paso de tiempo implícito (uno por paso de la RNN) y no modelan explícitamente los intervalos de tiempo entre observaciones. Para series irregulares, esto se ha abordado introduciendo \emph{features} temporales y mecanismos de decaimiento aprendibles.
+
+\hfill
+
+Un trabajo influyente en esta dirección es \emph{GRU-D} \cite{che2018recurrent}, que extiende la GRU estándar incorporando dos ideas clave: (i) un vector de \textbf{máscaras} que indica qué variables están observadas o faltantes en cada instante, y (ii) un conjunto de \textbf{intervalos de tiempo} desde la última observación de cada variable, que se usan para definir factores de decaimiento aprendibles sobre las entradas y los estados ocultos. De este modo, el modelo puede aprender a ``olvidar'' información antigua y a imputar valores faltantes hacia medias empíricas de forma dependiente del contexto, mejorando el desempeño en tareas como clasificación de pacientes a partir de registros clínicos irregulares.
+
+\hfill
+
+Otros trabajos relacionados incluyen:
+\begin{itemize}
+    \item Modelos que concatenan directamente el \emph{timestamp} o el intervalo de tiempo como entrada adicional a la RNN.
+    \item Variantes de LSTM con puertas de olvido que dependen de funciones del intervalo de tiempo (por ejemplo, decaimientos exponenciales o polinomiales).
+    \item Arquitecturas que combinan imputación explícita con RNN estándar, usando redes auxiliares para predecir valores faltantes antes de alimentarlos a la red recurrente.
+\end{itemize}
+
+En general, estos enfoques muestran que incorporar explícitamente el tiempo transcurrido entre observaciones y la estructura de datos faltantes mejora de manera consistente el rendimiento en \emph{forecasting} y clasificación, especialmente en dominios como salud, donde la irregularidad y \emph{missingness} son altamente informativas.
+
+\subsection{Modelos en tiempo continuo: Neural ODE, ODE-RNN y GRU–ODE–Bayes}
+
+Un segundo grupo de trabajos adopta una perspectiva de \textbf{tiempo continuo}, en la cual la dinámica latente de la serie se modela mediante ecuaciones diferenciales. En lugar de actualizar el estado oculto en pasos discretos fijos, estos modelos integran una EDO entre observaciones, lo que permite manejar de manera natural tiempos de muestreo irregulares.
+
+Entre las propuestas más destacadas se encuentran:
+\begin{itemize}
+    \item \textbf{ODE-RNN} y \textbf{Latent ODE}: el estado latente evoluciona según una EDO parametrizada por una red neuronal (\emph{Neural ODE}) entre observaciones, y se actualiza mediante saltos discretos al recibir nuevas mediciones. El entrenamiento se realiza mediante el método del \emph{adjoint} continuo, permitiendo backpropagation eficiente a través del solucionador de EDO \cite{chen2018neural,yulia2019latent}.
+    \item \textbf{GRU–ODE–Bayes}: combina una dinámica continua basada en GRU–ODE con un tratamiento bayesiano de las observaciones, separando conceptualmente el proceso generativo continuo y el mecanismo de muestreo/observación. Esto permite manejar ruidos de medición y frecuencia de muestreo variable de manera coherente \cite{de2019gru}.
+\end{itemize}
+
+Estos modelos capturan con elegancia la naturaleza continua del tiempo y permiten evaluar el estado latente en cualquier instante, lo cual es atractivo para predicción multi-step y para fusionar series con distintos calendarios de muestreo. No obstante, la necesidad de resolver una EDO (o un conjunto de ellas) en cada paso introduce un costo computacional significativo, y la estabilidad numérica puede depender fuertemente de la elección del solucionador y de la parametrización de la dinámica.
+
+\subsection{Ecuaciones diferenciales controladas y Neural CDE}
+
+Los modelos basados en \textbf{ecuaciones diferenciales controladas} (CDE) generalizan la idea anterior modelando la trayectoria latente $z_t$ como solución de una ecuación
+\[
+    \mathrm{d} z_t = f_\theta(z_t)\, \mathrm{d} X_t,
+\]
+donde $X_t$ es una versión suavizada o interpolada de la serie de entrada, considerada como un \emph{camino control} en tiempo continuo. Las \textbf{Neural CDE} parametrizan $f_\theta$ mediante una red neuronal y resuelven la ecuación con un solucionador numérico, de forma análoga a las Neural ODE, pero interpretando las entradas como controles que impulsan la dinámica \cite{kidger2020neural}.
+
+\hfill
+
+Esta formulación tiene varias ventajas para series irregulares:
+\begin{itemize}
+    \item La interpolación continua de las observaciones permite manejar \textbf{cualquier calendario de muestreo}, siempre que se defina una manera razonable de rellenar los huecos entre puntos (por ejemplo, interpolación lineal o splines).
+    \item El modelo es inherentemente \textbf{invariante a reparametrizaciones} del tiempo si se utilizan interpolaciones apropiadas, lo que lo hace robusto a cambios de resolución temporal.
+    \item Se puede demostrar que las Neural CDE son capaces de aproximar una clase amplia de funcionales sobre caminos, lo que las hace apropiadas para tareas tanto de \emph{forecasting} como de clasificación.
+\end{itemize}
+
+De nuevo, el costo computacional es mayor que en RNN estándar, y la complejidad de implementación (interpoladores, solucionadores, control de error) puede dificultar su adopción en entornos industriales. Además, la incorporación de mecanismos de atención similares a los de un \Transformer\ no es directa en este marco.
+
+\section{Transformers para series de tiempo}
+\label{sec:estado-arte-transformers}
+
+Los \Transformers\ han demostrado un rendimiento sobresaliente en procesamiento de lenguaje natural, visión por computador y, más recientemente, en forecasting de series de tiempo equiespaciadas \cite{vaswani2017attention}. En esta sección se revisan primero las extensiones para series regulares y, luego, las propuestas que abordan de manera explícita el muestreo irregular o el tiempo continuo.
+
+\subsection{Transformers para series equiespaciadas}
+
+El uso de \Transformers\ en series de tiempo regulares se ha disparado en los últimos años. Numerosos trabajos han propuesto arquitecturas y componentes especializados para mejorar el rendimiento y la eficiencia computacional en pronósticos de largo horizonte, típicamente bajo el supuesto de observaciones equiespaciadas:
+\begin{itemize}
+    \item \textbf{Informer}: introduce una atención \emph{prob-sparse} para reducir la complejidad cuadrática a casi lineal en la longitud de la secuencia, manteniendo el foco en las contribuciones de atención más relevantes. Propone además un esquema de codificación temporal híbrida (posicional + \emph{time-of-day}, \emph{day-of-week}, etc.) y demuestra mejoras significativas en benchmarks de \emph{forecasting} multivariante \cite{zhou2021informer}.
+    \item \textbf{Autoformer}: replantea la auto-atención como un mecanismo de auto-correlación sobre descomposiciones tendencia–estacionalidad, proponiendo un bloque de \emph{series decomposition} que separa componentes de baja frecuencia y patrones periódicos. Esta descomposición se integra en las capas del \Transformer, mejorando la capacidad de modelar estructuras de largo plazo \cite{wu2021autoformer}.
+    \item \textbf{FEDformer}: extiende la idea de Autoformer incorporando descomposición en dominios de frecuencia y empleando atención sobre componentes seleccionados en el espacio espectral, lo que reduce la carga computacional manteniendo la expresividad para series largas \cite{zhou2022fedformer}.
+\end{itemize}
+
+Si bien estas arquitecturas logran resultados de vanguardia en benchmarks populares, comparten supuestos clave:
+\begin{itemize}
+    \item Las observaciones están en una malla \textbf{equiespaciada}; el índice de tiempo se puede tratar como un entero $1,\dots,T$.
+    \item El \emph{positional encoding} se define típicamente sobre estos índices discretos, a veces enriquecido con \emph{features} calendáricas (hora del día, día de la semana, etc.), pero no sobre \emph{timestamps} reales.
+\end{itemize}
+
+Cuando se aplican a series irregulares, estos modelos suelen requerir un preprocesamiento de re-muestreo e imputación como el descrito en la Sección~\ref{sec:estado-arte-clasicos}, con las limitaciones asociadas.
+
+\subsection{Positional encodings continuos y representaciones del tiempo}
+
+Una línea de trabajo más reciente se enfoca en \textbf{representaciones continuas del tiempo} para integrarlas en arquitecturas tipo \Transformer. Entre las propuestas relevantes se encuentran:
+\begin{itemize}
+    \item \textbf{Time2Vec}: introduce una representación aprendible del tiempo que combina una componente lineal y varias componentes periódicas parametrizadas, generando un vector $v(t)$ que captura tanto tendencias como periodicidades en el tiempo. Time2Vec puede concatenarse a las entradas de un \Transformer\ o de otros modelos \cite{kazemi2019time2vec}.
+    \item Trabajos que estudian la relación entre \textbf{positional encodings discretos y continuos}, mostrando que los codificadores sinusoidales clásicos pueden interpretarse como evaluaciones discretas de funciones definidas sobre tiempo continuo, y explorando extensiones que permiten evaluar el encoding en tiempos reales intermedios. Esto abre la puerta a reemplazar el índice entero por un \emph{timestamp} real normalizado.
+\end{itemize}
+
+Estas ideas son particularmente relevantes para series irregulares: si el \emph{positional encoding} puede evaluarse en cualquier tiempo, es posible definir un \textbf{encoding temporal continuo} que reciba directamente los \emph{timestamps} reales, preservando la estructura del \Transformer\ original. Esta es precisamente la filosofía que se adopta en el modelo de esta memoria, descrito en los Capítulos~\ref{cap:transformers-series-tiempo} y~\ref{cap:modelo-no-equiespaciado}.
+
+\subsection{Transformers sobre observaciones irregulares y modelos híbridos}
+
+Más allá de los \emph{encodings} continuos, una línea muy relevante del estado del arte reciente consiste en construir \textbf{tokens directamente a partir de observaciones irregulares}, evitando la regularización previa sobre una malla fija. En esta familia destacan, al menos, dos estrategias representativas.
+
+La primera consiste en tratar la serie como un \textbf{conjunto de eventos u observaciones}. Un ejemplo claro es \textbf{STraTS} \cite{tipirneni2022strats}, que representa cada medición mediante un triplete $(t,f,v)$ compuesto por tiempo, variable y valor, y aplica un \Transformer\ sobre estas observaciones embebidas. Su contribución principal es demostrar que un esquema de atención estándar puede operar directamente sobre datos clínicos dispersos e irregulares sin recurrir a imputación o agregación horaria agresiva. Además, incorpora un objetivo de auto-supervisión basado en \emph{forecasting} para mejorar la calidad de las representaciones cuando los datos etiquetados son escasos. Este enfoque es conceptualmente cercano a la idea de esta memoria de trabajar con \emph{timestamps} reales, aunque fue validado principalmente en tareas de clasificación clínica y con una tokenización centrada en observaciones individuales más que en ventanas de historia con \emph{token objetivo}.
+
+La segunda estrategia consiste en definir mecanismos de atención que respeten explícitamente la estructura irregular en los ejes temporal y multivariable. En esta línea, \textbf{CoFormer} \cite{wei2023coformer} modela cada muestra como un punto \emph{variate-time} y alterna atención \emph{intra-variate} e \emph{inter-variate} sobre vecindarios definidos por variable y cercanía temporal. De esta forma, el modelo aprende por separado la evolución temporal de cada variable y las interacciones entre variables asincrónicas. Frente a un encoder \Transformer\ completamente estándar, CoFormer introduce una inductive bias más fuerte y explícita para manejar la desalineación temporal; a cambio, su arquitectura es más específica del problema y menos directamente reutilizable como bloque genérico de \emph{forecasting}.
+
+Junto con estos modelos orientados a observaciones, siguen existiendo propuestas que integran nociones explícitas de \textbf{tiempo continuo} en la trayectoria latente o en la representación de la secuencia:
+\begin{itemize}
+    \item Modelos que combinan \Transformers\ con \textbf{Neural ODE} o \textbf{Neural CDE}, utilizando la atención para resumir subsecuencias o para parametrizar el campo vectorial de la EDO/ECDE, y resolviendo luego la dinámica en tiempo continuo.
+    \item Propuestas como el \textbf{Rough Transformer}, que se apoyan en herramientas de \emph{rough path theory} y firmas de caminos (\emph{signatures}) para representar trayectorias irregulares, sobre las que se aplica atención. La idea central es mapear la serie irregular a un conjunto de características invariantes a reparametrizaciones del tiempo, que luego sirven como ``tokens'' de entrada al \Transformer\ \cite{moreno2024rough}.
+\end{itemize}
+
+En conjunto, estos trabajos muestran que el panorama actual ya no se limita a ``transformers regulares + imputación'', sino que incluye arquitecturas capaces de operar directamente sobre observaciones asincrónicas. Sin embargo, persiste un compromiso claro entre \textbf{generalidad arquitectónica}, \textbf{sesgo inductivo específico para la irregularidad} y \textbf{simplicidad de implementación}. Precisamente ahí se sitúa la motivación de esta memoria: capturar la información temporal continua sin abandonar la estructura simple y reutilizable de un encoder \Transformer\ convencional.
+
+\subsection{Agregación por \emph{patches} y baselines simples para series irregulares}
+
+Muy recientemente han aparecido trabajos que replantean el \emph{forecasting} de series irregulares desde una perspectiva de \textbf{agregación por bloques} (\emph{patch aggregation}). Una propuesta representativa introduce un módulo de agregación consciente del tiempo, que agrupa observaciones irregulares en \emph{patches} definidos sobre ventanas temporales y aplica operaciones de pooling o atenciones locales para producir una secuencia de tokens en una malla pseudo-regular. Esta secuencia agregada se procesa luego con redes relativamente simples (por ejemplo, MLP o bloques de atención ligeros) \cite{liu2025rethinking}.
+
+\hfill
+
+De manera llamativa, estos métodos reportan que una combinación de:
+\begin{itemize}
+    \item agregación temporal bien diseñada,
+    \item modelos posteriores simples (incluso sin \Transformers\ profundos),
+\end{itemize}
+puede competir o superar a arquitecturas mucho más complejas basadas en ODE/CDE o \Transformers\ especializados \cite{liu2025rethinking}. Esto sugiere que, en series irregulares, \textbf{cómo se resumen los datos en el tiempo} puede ser tan importante como la arquitectura posterior.
+
+\hfill
+
+La propuesta de esta memoria se alinea parcialmente con esta idea: en lugar de diseñar un \Transformer\ radicalmente nuevo, se busca una combinación sencilla pero expresiva de:
+\begin{itemize}
+    \item encoding temporal continuo sobre \emph{timestamps} reales,
+    \item construcción cuidadosa de ventanas de historia y \emph{token target},
+    \item y un encoder \Transformer\ estándar \cite{vaswani2017attention}.
+\end{itemize}
+De este modo, la irregularidad se aborda principalmente en la forma en que se representan y organizan los datos en la secuencia de entrada.
+
+\section{Clasificación de series de tiempo irregulares}
+\label{sec:estado-arte-clasificacion}
+
+Aunque el foco principal de esta memoria es el \emph{forecasting}, muchas de las técnicas discutidas se han desarrollado inicialmente para tareas de \textbf{clasificación} sobre series irregulares, especialmente en el dominio de la salud. En esta sección se resume brevemente el estado del arte en clasificación, poniendo énfasis en su relación con los modelos ya descritos.
+
+\subsection{Métodos probabilísticos y kernels para series irregulares}
+
+Antes de la adopción masiva de deep learning, la clasificación de series irregulares se abordaba a menudo mediante:
+\begin{itemize}
+    \item \textbf{Modelos de mezcla} de procesos gaussianos (por ejemplo, mezclas de GP o GP con kernels específicos por clase), donde la probabilidad de una trayectoria se evalúa bajo diferentes clases y se aplica la regla de Bayes \cite{williams2006gaussian}.
+    \item \textbf{Kernels dinámicos} que comparan series de distintos sujetos mediante alineamientos en tiempo continuo (por ejemplo, variantes de \emph{dynamic time warping} continuo \cite{sakoe2003dynamic,muller2007information} o kernels de \emph{time series shapelets} \cite{ye2009time,hills2014classification}), aptos para métodos de clasificación kernelizados como SVM.
+\end{itemize}
+
+Estos enfoques explotan bien la estructura temporal y la irregularidad, pero pueden ser costosos en conjuntos de datos grandes y menos flexibles que los modelos neuronales para capturar relaciones complejas entre variables.
+
+\subsection{Modelos de deep learning para clasificación irregular}
+
+Buena parte de los modelos de deep learning revisados en la Sección~\ref{sec:estado-arte-deep} se introdujeron inicialmente para \textbf{clasificación} más que para forecasting. Ejemplos importantes incluyen:
+\begin{itemize}
+    \item GRU-D y variantes con decaimientos y máscaras, aplicados a tareas como predicción de mortalidad, diagnóstico y detección temprana de sepsis \cite{che2018recurrent}.
+    \item ODE-RNN, Latent ODE y GRU–ODE–Bayes, utilizados para modelar la evolución de estados fisiológicos latentes a partir de mediciones clínicas irregulares, con salidas de clasificación en tiempos específicos \cite{chen2018neural,yulia2019latent,de2019gru}.
+    \item Neural CDE y modelos relacionados, que tratan la trayectoria como un camino continuo y aprenden funciones sobre dicho camino para predecir etiquetas globales o evento–tiempo \cite{kidger2020neural}.
+\end{itemize}
+
+En la práctica, las diferencias entre forecasting y clasificación se reducen a la elección de la capa de salida (regresión vs clasificación) y de la función de pérdida (MSE vs entropía cruzada). Las consideraciones arquitectónicas para manejar irregularidad son en gran medida las mismas.
+
+\subsection{Transformers para clasificación de series irregulares}
+
+El uso de \Transformers\ para clasificación con observaciones irregulares ha madurado especialmente en el dominio biomédico, aunque la literatura sigue estando relativamente \textbf{fragmentada por tarea y dominio}. En términos generales, pueden distinguirse tres estrategias.
+
+\begin{itemize}
+    \item \textbf{Preprocesamiento + Transformer estándar}: las series se regularizan mediante re-muestreo o imputación y se alimentan a un \Transformer\ similar a los usados en series equiespaciadas, con una cabeza de clasificación sobre un token agregado.
+    \item \textbf{Tokenización directa de observaciones irregulares}: en lugar de construir una malla temporal artificial, cada medición se convierte en un token o punto elemental. STraTS pertenece a esta familia y muestra que una arquitectura de atención aplicada a tripletes tiempo--variable--valor puede competir con baselines especializados en clasificación clínica irregular \cite{tipirneni2022strats}. CoFormer también se sitúa en esta línea amplia, aunque con una atención más estructurada sobre vecindarios \emph{intra/inter-variate} \cite{wei2023coformer}.
+    \item \textbf{Encodings temporales enriquecidos}: se mantienen los \emph{timestamps} originales y se incorporan como encodings adicionales, por ejemplo mediante Time2Vec o embeddings sinusoidales continuos evaluados en tiempos reales \cite{kazemi2019time2vec}. Este planteamiento es el más cercano a la filosofía de la presente memoria, ya que busca preservar la forma del \Transformer\ original modificando principalmente la representación temporal.
+\end{itemize}
+
+La evidencia reciente sugiere que los \Transformers\ sí pueden ser competitivos en clasificación irregular cuando la representación temporal y la tokenización respetan la asincronía de las observaciones. No obstante, la mayor parte de los resultados más sólidos siguen concentrados en \textbf{clasificación clínica} y no necesariamente se trasladan de forma directa a problemas generales de \emph{forecasting} multivariante irregular. Esta separación entre literatura de clasificación y literatura de pronóstico es una de las razones por las que sigue siendo valioso estudiar arquitecturas simples y transferibles entre ambas tareas.
+
+\section{Discusión y brechas de investigación}
+\label{sec:brechas-estado-arte}
+
+A partir de la revisión anterior, se pueden identificar varias brechas que motivan el modelo propuesto en esta memoria:
+
+\begin{enumerate}
+    \item \textbf{Dependencia de re-muestreo e imputación}. Muchos enfoques prácticos siguen descansando en la regularización de la serie sobre una malla fija, con el riesgo de introducir sesgos y perder información sobre la distribución real de los tiempos de muestreo.
+    \item \textbf{Complejidad de algunos modelos en tiempo continuo}. Los modelos basados en ODE/CDE ofrecen un tratamiento elegante del tiempo continuo, pero a costa de mayor complejidad computacional y de implementación, lo que puede dificultar su uso en entornos de producción.
+    \item \textbf{Integración limitada entre \Transformers\ y tiempo continuo para forecasting general}. Aunque existen propuestas relevantes como STraTS o CoFormer, la mayoría de los avances recientes se han validado sobre todo en clasificación irregular, frecuentemente en salud, o bien introducen mecanismos de atención muy específicos para el dominio. Siguen siendo relativamente pocas las arquitecturas que:
+    \begin{itemize}
+        \item mantengan la estructura estándar de un encoder \Transformer\ (auto-atención + bloques feedforward),
+        \item trabajen directamente con \emph{timestamps} reales sin re-muestreo a una malla equiespaciada,
+        \item y permitan manejar de forma natural historias de longitud variable y horizontes de predicción heterogéneos en tareas de pronóstico multivariante.
+    \end{itemize}
+    \item \textbf{Baselines simples y comparabilidad}. Trabajos recientes orientados a series irregulares muestran que módulos de agregación temporal bien diseñados, combinados con modelos relativamente simples, pueden competir con arquitecturas profundas muy sofisticadas \cite{liu2025rethinking}. Esto pone de manifiesto la necesidad de:
+    \begin{itemize}
+        \item modelos conceptualmente claros y modulares,
+        \item comparaciones experimentales cuidadosas frente a baselines robustos.
+    \end{itemize}
+\end{enumerate}
+
+En este contexto, la contribución de la presente memoria se sitúa en el cruce de varias líneas:
+\begin{itemize}
+    \item Diseñar un \textbf{encoding temporal continuo} que reciba directamente \emph{timestamps} reales, inspirado en los posicional encodings sinusoidales clásicos, pero normalizado por una escala temporal configurable.
+    \item Construir la tarea de forecasting mediante un \textbf{token objetivo} que representa explícitamente el instante de predicción dentro de la misma secuencia que la historia, permitiendo reutilizar un encoder \Transformer\ estándar \cite{vaswani2017attention}.
+    \item Explorar el entrenamiento con \textbf{historias de longitud variable} y \textbf{múltiples offsets de predicción} dentro de un mismo modelo, evaluando cómo estas decisiones de diseño afectan la capacidad de generalización en escenarios sintéticos y reales.
+\end{itemize}
+
+Los capítulos siguientes desarrollan en detalle esta propuesta: el Capítulo~\ref{cap:series-tiempo} formaliza el problema y la construcción de ejemplos supervisados; el Capítulo~\ref{cap:transformers-series-tiempo} presenta la arquitectura base de \Transformers\ para series de tiempo; y el Capítulo~\ref{cap:modelo-no-equiespaciado} describe el modelo no equiespaciado propuesto, junto con su implementación concreta.

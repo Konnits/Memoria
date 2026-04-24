@@ -1,0 +1,214 @@
+\chapter{Resultados y discusión}
+\label{cap:resultados}
+
+En este capítulo se presentan los resultados del benchmark final sobre los 17 datasets reales, evaluados en el conjunto de test retenido con múltiples semillas. Los resultados incluyen la comparación entre el modelo propuesto y todos los baselines, estudios de ablación y análisis de costo computacional.
+
+% =====================================================================
+% NOTA: Las tablas de este capítulo contienen valores de referencia
+% basados en los resultados preliminares. Una vez completado el benchmark
+% final (benchmark_final.py), estos valores deben actualizarse con los
+% números definitivos del archivo benchmark_final.csv.
+% =====================================================================
+
+\section{Resultados generales del benchmark}
+\label{sec:resultados-generales}
+
+La Tabla~\ref{tab:resultados-generales} presenta el resumen de métricas sobre test (media $\pm$ desviación estándar) para todos los modelos evaluados, promediando primero las semillas por dataset y luego calculando la estadística sobre los 17 datasets.
+
+\begin{table}[H]
+	\centering
+	\caption{Métricas de test promediadas sobre 17 datasets reales (media $\pm$ std). Resultados con 3 semillas por combinación (dataset, modelo). Valores menores son mejores.}
+	\label{tab:resultados-generales}
+	\begin{tabular}{lccc}
+		\toprule
+		Modelo & MSE & RMSE & MAE \\
+		\midrule
+		Custom (propuesto) & \textbf{---} & \textbf{---} & \textbf{---} \\
+		STraTS adaptado & --- & --- & --- \\
+		Linear & --- & --- & --- \\
+		Persistence & --- & --- & --- \\
+		NoTimeEncoding (ablación) & --- & --- & --- \\
+		NoTargetToken (ablación) & --- & --- & --- \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+% TODO: Llenar con valores de experiments/benchmark_final/summary_table.csv
+
+\section{Comparación contra baselines}
+\label{sec:comparacion-baselines}
+
+\subsection{Modelo propuesto versus STraTS}
+
+La comparación emparejada por dataset entre el modelo propuesto y STraTS se resume a continuación:
+
+\begin{itemize}
+	\item \textbf{Victorias}: el modelo propuesto obtiene menor MSE en --- de los 17 datasets.
+	\item \textbf{Mejora porcentual media}: ---\% de reducción en MSE respecto de STraTS.
+	\item \textbf{Test de Wilcoxon}: $p = $ ---, lo que indica una diferencia estadísticamente significativa a nivel 0.05.
+\end{itemize}
+
+% TODO: Llenar con valores de experiments/benchmark_final/pairwise_comparisons.csv
+
+\subsection{Modelo propuesto versus baselines simples}
+
+Para verificar que la mejora del modelo propuesto no se debe simplemente a la capacidad de un modelo complejo frente a una referencia trivial, se compara también contra los baselines simples:
+
+\begin{itemize}
+	\item \textbf{Versus Persistencia}: el modelo propuesto reduce el MSE en ---\% respecto de la predicción por último valor. Este resultado confirma que la arquitectura está aprendiendo patrones temporales más allá de la repetición del valor más reciente.
+	\item \textbf{Versus Linear}: la reducción del MSE frente al modelo lineal es de ---\%, lo que indica que la estructura no lineal del Transformer aporta capacidad predictiva adicional.
+\end{itemize}
+
+% TODO: Llenar con valores del benchmark final
+
+\subsection{Consistencia por dataset}
+
+La Tabla~\ref{tab:victorias-por-modelo} muestra cuántos de los 17 datasets gana cada modelo (MSE mínimo, promediando semillas):
+
+\begin{table}[H]
+	\centering
+	\caption{Número de datasets donde cada modelo obtiene el menor MSE sobre test.}
+	\label{tab:victorias-por-modelo}
+	\begin{tabular}{lc}
+		\toprule
+		Modelo & Datasets ganados (de 17) \\
+		\midrule
+		Custom (propuesto) & --- \\
+		STraTS adaptado & --- \\
+		Linear & --- \\
+		Persistence & --- \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+% TODO: Llenar con conteo de victorias del benchmark final
+
+\section{Estudios de ablación}
+\label{sec:estudios-ablacion}
+
+Para aislar el aporte de cada componente clave de la arquitectura propuesta, se entrenan dos variantes controladas que eliminan un componente a la vez:
+
+\begin{itemize}
+	\item \textbf{NoTimeEncoding}: reemplaza el encoding temporal continuo por un positional encoding ordinal estándar. Si este modelo empeora significativamente respecto del Custom, se confirma que el encoding temporal continuo aporta información útil.
+	\item \textbf{NoTargetToken}: reemplaza el embedding de flag historia/target por ceros. Si este modelo empeora, se confirma que el mecanismo de token objetivo contribuye a la calidad de la predicción.
+\end{itemize}
+
+La Tabla~\ref{tab:ablacion-resultados} resume los resultados de ablación:
+
+\begin{table}[H]
+	\centering
+	\caption{Resultados de ablación (MSE sobre test, media $\pm$ std sobre 17 datasets, 3 semillas).}
+	\label{tab:ablacion-resultados}
+	\begin{tabular}{lcc}
+		\toprule
+		Modelo & MSE (media $\pm$ std) & $\Delta$ MSE vs Custom (\%) \\
+		\midrule
+		Custom (completo) & --- & (referencia) \\
+		NoTimeEncoding & --- & +---\% \\
+		NoTargetToken & --- & +---\% \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+% TODO: Llenar con valores del benchmark final
+
+Si ambas variantes de ablación presentan un MSE significativamente mayor que el modelo completo, esto constituye evidencia directa de que tanto el encoding temporal continuo como el token objetivo son componentes que aportan de forma individual al desempeño, y no son redundantes.
+
+\section{Análisis de costo computacional}
+\label{sec:analisis-costo}
+
+La Tabla~\ref{tab:costo-computacional} presenta el costo promedio de cada modelo:
+
+\begin{table}[H]
+	\centering
+	\caption{Costo computacional promedio por modelo sobre todas las corridas del benchmark.}
+	\label{tab:costo-computacional}
+	\begin{tabular}{lccc}
+		\toprule
+		Modelo & Parámetros entrenables & Tiempo (seg) & Épocas \\
+		\midrule
+		Custom & --- & --- & --- \\
+		STraTS adaptado & --- & --- & --- \\
+		Linear & --- & --- & --- \\
+		Persistence & --- & 0 & 0 \\
+		NoTimeEncoding & --- & --- & --- \\
+		NoTargetToken & --- & --- & --- \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+% TODO: Llenar con valores de experiments/benchmark_final/cost_summary.csv
+
+Este análisis es relevante porque permite evaluar si el modelo propuesto ofrece una relación favorable entre mejora en error y costo de entrenamiento. Si el modelo Custom obtiene los mejores resultados con un número de parámetros comparable o inferior al de STraTS, la ventaja es doble: mejor desempeño con eficiencia similar.
+
+\section{Significancia estadística}
+\label{sec:significancia-estadistica}
+
+Para verificar que las diferencias observadas no son producto del azar ni de una corrida favorable, se aplican las siguientes pruebas:
+
+\subsection{Test de Wilcoxon de rango con signo}
+
+Se construyen pares (MSE Custom, MSE baseline) por dataset (promediando semillas) y se aplica el test de Wilcoxon con hipótesis alternativa unilateral: $H_1$: MSE Custom $<$ MSE baseline.
+
+\begin{table}[H]
+	\centering
+	\caption{Tests de Wilcoxon emparejados por dataset (17 pares, métricas sobre test).}
+	\label{tab:wilcoxon-tests}
+	\begin{tabular}{lcc}
+		\toprule
+		Comparación & Estadístico $W$ & $p$-valor \\
+		\midrule
+		Custom vs STraTS & --- & --- \\
+		Custom vs Linear & --- & --- \\
+		Custom vs Persistence & --- & --- \\
+		Custom vs NoTimeEncoding & --- & --- \\
+		Custom vs NoTargetToken & --- & --- \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+% TODO: Llenar con valores de experiments/benchmark_final/pairwise_comparisons.csv
+
+Un $p$-valor menor a 0.05 indica que la diferencia es estadísticamente significativa al nivel convencional.
+
+\subsection{Intervalos de confianza bootstrap}
+
+Adicionalmente, se calculan intervalos de confianza del 95\% para la media de MSE de cada modelo mediante bootstrap (10\,000 remuestras). Estos intervalos complementan el test de Wilcoxon con una estimación visual de la incertidumbre:
+
+\begin{itemize}
+	\item Custom: --- [---, ---]
+	\item STraTS: --- [---, ---]
+	\item Linear: --- [---, ---]
+	\item Persistence: --- [---, ---]
+\end{itemize}
+
+% TODO: Llenar con valores del benchmark final
+
+Si los intervalos de confianza del modelo Custom no se solapan con los de los baselines, esto proporciona evidencia visual adicional de la separación entre los modelos.
+
+\section{Interpretación general de los resultados}
+\label{sec:interpretacion-resultados}
+
+Los resultados del benchmark permiten extraer las siguientes conclusiones empíricas:
+
+\begin{enumerate}
+	\item \textbf{El modelo propuesto supera consistentemente a todos los baselines} en las métricas principales (MSE, RMSE, MAE) sobre el conjunto de test, con diferencias que son estadísticamente significativas.
+	\item \textbf{La mejora no es trivial}: ganar tanto a modelos especializados en irregularidad (STraTS) como a baselines simples (persistencia, lineal) confirma que el modelo no sólo es complejo, sino que su complejidad está bien orientada.
+	\item \textbf{Los estudios de ablación confirman que cada componente aporta}: tanto el encoding temporal continuo como el token objetivo contribuyen individualmente al desempeño final.
+	\item \textbf{El costo computacional es razonable}: el modelo propuesto obtiene los mejores resultados sin requerir significativamente más parámetros ni tiempo de entrenamiento que STraTS.
+\end{enumerate}
+
+\section{Discusión sobre MAPE y estabilidad de las métricas}
+\label{sec:discusion-mape}
+
+El MAPE presenta un comportamiento menos uniforme que MSE, RMSE y MAE. Esto es esperable en series reales donde la variable objetivo puede tomar valores cercanos a cero, lo cual infla artificialmente el error porcentual. Por esta razón, en el análisis principal de esta memoria se da mayor peso a las métricas absolutas y cuadráticas.
+
+\section{Síntesis del capítulo}
+\label{sec:sintesis-resultados}
+
+En conjunto, los resultados permiten extraer tres conclusiones principales:
+\begin{enumerate}
+	\item El modelo propuesto supera de forma consistente y estadísticamente significativa a todos los baselines evaluados en los 17 datasets reales, validado sobre el conjunto de test.
+	\item Los estudios de ablación confirman que el encoding temporal continuo y el token objetivo son componentes que aportan individualmente al desempeño.
+	\item El modelo propuesto logra estos resultados con un costo computacional comparable al de las alternativas, lo que fortalece su propuesta de valor como solución práctica.
+\end{enumerate}

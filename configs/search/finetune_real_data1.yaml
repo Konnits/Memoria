@@ -1,0 +1,27 @@
+name: finetune_real_data1_search
+strategy: random
+metric: val_rmse
+mode: min
+seed: 42
+max_trials: 12
+
+parameters:
+  - section: model
+    path: d_model
+    values: [64, 128]
+
+  - section: training
+    path: optimizer.lr
+    values: [0.0005, 0.0002, 0.0001]
+
+  - section: model
+    path: dropout
+    values: [0.0, 0.1, 0.2]
+
+  - section: training
+    path: freeze_encoder_epochs
+    values: [0, 3, 5]
+
+  - section: training
+    path: unfreeze_lr
+    values: [0.0001, 0.00005]

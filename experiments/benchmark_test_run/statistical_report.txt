@@ -1,0 +1,28 @@
+======================================================================
+REPORTE ESTADÍSTICO DE COMPARACIÓN DE MODELOS
+======================================================================
+
+RESUMEN POR MODELO (media ± std sobre datasets):
+        Modelo  test_mse_mean  test_mse_std        test_mse  test_rmse_mean  test_rmse_std       test_rmse  test_mae_mean  test_mae_std        test_mae
+        Custom       0.321669           0.0 0.3217 ± 0.0000        0.567158            0.0 0.5672 ± 0.0000       0.351467           0.0 0.3515 ± 0.0000
+        Linear            NaN           NaN       nan ± nan             NaN            NaN       nan ± nan            NaN           NaN       nan ± nan
+   Persistence       1.028645           0.0 1.0286 ± 0.0000        1.014221            0.0 1.0142 ± 0.0000       0.899018           0.0 0.8990 ± 0.0000
+STraTS_Adapter       0.937003           0.0 0.9370 ± 0.0000        0.967989            0.0 0.9680 ± 0.0000       0.734848           0.0 0.7348 ± 0.0000
+
+
+--- Comparación emparejada: test_mse ---
+  Custom vs Linear: No hay datasets en común entre Custom y Linear
+  Custom vs Persistence: Victorias 1/1, Mejora media: 68.7%, Wilcoxon p=0.500000
+  Custom vs STraTS_Adapter: Victorias 1/1, Mejora media: 65.7%, Wilcoxon p=0.500000
+
+
+--- Comparación emparejada: test_rmse ---
+  Custom vs Linear: No hay datasets en común entre Custom y Linear
+  Custom vs Persistence: Victorias 1/1, Mejora media: 44.1%, Wilcoxon p=0.500000
+  Custom vs STraTS_Adapter: Victorias 1/1, Mejora media: 41.4%, Wilcoxon p=0.500000
+
+
+--- Comparación emparejada: test_mae ---
+  Custom vs Linear: No hay datasets en común entre Custom y Linear
+  Custom vs Persistence: Victorias 1/1, Mejora media: 60.9%, Wilcoxon p=0.500000
+  Custom vs STraTS_Adapter: Victorias 1/1, Mejora media: 52.2%, Wilcoxon p=0.500000

@@ -1,0 +1,18 @@
+# Estos valores de input_dim y output_dim se sobrescribirán desde DataConfig
+input_dim: 1
+output_dim: 1
+
+d_model: 128
+num_heads: 4
+num_layers: 4
+dim_feedforward: 256
+dropout: 0.1
+activation: relu
+
+# Escala de tiempo para el encoding temporal continuo
+# (p.ej. 900 s = 15 min)
+time_scale: 900.0
+
+# En este caso normalmente False (no-autoregresivo)
+use_causal_mask: false
+validate_inputs: false

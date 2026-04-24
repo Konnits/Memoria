@@ -1,0 +1,10 @@
+input_dim: 1
+output_dim: 1
+d_model: 64
+num_heads: 4
+num_layers: 2
+dim_feedforward: 256
+dropout: 0.1
+activation: relu
+time_scale: 900.0
+use_causal_mask: false

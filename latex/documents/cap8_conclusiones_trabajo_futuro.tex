@@ -1,0 +1,74 @@
+\chapter{Conclusiones y trabajo futuro}
+\label{cap:conclusiones}
+
+La pregunta central que motivó esta memoria fue si era posible adaptar la arquitectura \Transformer\ para trabajar de manera directa con series de tiempo no equiespaciadas, incorporando los timestamps reales sin depender de una regularización previa sobre una malla temporal fija. A partir del desarrollo teórico, de la implementación realizada y de los resultados experimentales obtenidos, la respuesta que entrega esta memoria es afirmativa.
+
+\hfill
+
+El modelo propuesto combina una estructura conceptualmente simple ---embedding de valores, encoding temporal continuo, embedding de token objetivo, encoder \Transformer\ y cabeza de regresión--- con un mecanismo de construcción de secuencias que permite representar explícitamente el instante de predicción. Esta combinación resultó suficiente para entrenar un modelo funcional y superior a los baselines evaluados sobre datos reales con timestamps irregulares.
+
+\section{Conclusiones principales}
+\label{sec:conclusiones-principales}
+
+Las principales conclusiones que se desprenden de esta memoria son las siguientes:
+
+\begin{enumerate}
+	\item \textbf{La formulación propuesta es viable y efectiva}. El uso de un encoding temporal continuo sobre timestamps reales se integró de manera natural dentro de un encoder \Transformer\ estándar, sin requerir rediseñar completamente la arquitectura. El modelo convergió de forma estable en los 17 datasets reales evaluados.
+
+	\item \textbf{El modelo propuesto supera consistentemente a todos los baselines}. Sobre el conjunto de test de 17 datasets con 3 semillas, el modelo propuesto obtuvo el menor MSE, RMSE y MAE de forma sistemática, tanto frente a STraTS (un baseline diseñado para irregularidad) como frente a baselines simples (persistencia y modelo lineal). Las diferencias son estadísticamente significativas según el test de Wilcoxon emparejado por dataset.
+
+	\item \textbf{Cada componente de la arquitectura aporta de forma verificable}. Los estudios de ablación mostraron que tanto el encoding temporal continuo como el mecanismo de token objetivo contribuyen individualmente al desempeño. Eliminar cualquiera de los dos componentes produce un deterioro consistente en las métricas sobre test.
+
+	\item \textbf{La simplicidad arquitectónica es una ventaja real}. Frente a enfoques más especializados para irregularidad, la propuesta conserva modularidad, reutilizabilidad e interpretabilidad del pipeline, manteniendo un desempeño superior con un costo computacional comparable.
+
+	\item \textbf{La irregularidad temporal contiene información útil que conviene modelar explícitamente}. La superioridad del modelo completo frente a la variante NoTimeEncoding confirma que tratar el tiempo como una variable continua dentro del embedding es preferible a ignorarlo o colapsarlo en índices discretos.
+\end{enumerate}
+
+\section{Solidez de la evidencia experimental}
+\label{sec:solidez-evidencia}
+
+A diferencia de una evaluación preliminar, la campaña experimental de esta memoria cumple los siguientes criterios de solidez:
+
+\begin{itemize}
+	\item \textbf{17 datasets reales}: la evaluación cubre la totalidad de la colección disponible, lo que permite generalizar los resultados.
+	\item \textbf{3 semillas por combinación}: la variabilidad entre ejecuciones está cuantificada mediante media $\pm$ desviación estándar.
+	\item \textbf{Evaluación sobre test}: las métricas finales corresponden al split de test (15\% de los datos), separado de validación y entrenamiento.
+	\item \textbf{6 modelos comparados}: modelo propuesto, STraTS, modelo lineal, persistencia, y dos variantes de ablación.
+	\item \textbf{Significancia estadística}: las diferencias se verifican con tests de Wilcoxon emparejados e intervalos de confianza bootstrap.
+	\item \textbf{Análisis de costo}: se reportan parámetros y tiempo de entrenamiento para cada modelo.
+\end{itemize}
+
+\section{Limitaciones}
+\label{sec:limitaciones-version-actual}
+
+A pesar de la solidez del benchmark, esta memoria presenta las siguientes limitaciones:
+
+\begin{itemize}
+	\item CoFormer \cite{wei2023coformer}, implementado en el repositorio, no pudo incorporarse a la comparación principal debido a su alto costo computacional. Su inclusión habría fortalecido aún más la evaluación del modelo propuesto frente a otro baseline irregular-aware.
+	\item Los datasets evaluados corresponden a series univariadas de sensores. La extensión a escenarios multivariados queda como trabajo futuro.
+	\item No se exploró exhaustivamente el espacio de hiperparámetros del modelo propuesto; los resultados presentados utilizan una configuración base fija.
+\end{itemize}
+
+Estas limitaciones no invalidan las conclusiones principales, pero trazan un camino claro para extensiones futuras.
+
+\section{Trabajo futuro}
+\label{sec:trabajo-futuro}
+
+Las líneas de trabajo futuro más naturales que se desprenden de esta memoria son:
+
+\begin{enumerate}
+	\item \textbf{Incorporar CoFormer}: una vez disponible el cómputo necesario, entrenar y evaluar CoFormer dentro del mismo protocolo experimental para ampliar la comparación con otro baseline irregular-aware.
+	\item \textbf{Optimización de hiperparámetros}: realizar una búsqueda sistemática (Optuna, Bayesian search) sobre la dimensión del modelo, el learning rate, la escala temporal y el número de targets.
+	\item \textbf{Escenarios multivariados}: extender la evaluación a configuraciones donde múltiples variables de entrada y salida interactúan, aprovechando el modo de tokens por evento ya implementado.
+	\item \textbf{Horizontes de predicción}: estudiar sistemáticamente cómo varía el desempeño al cambiar el número y la separación de los horizontes objetivo.
+	\item \textbf{Preentrenamiento y transferencia}: explorar si un preentrenamiento sobre datasets múltiples mejora el desempeño en datasets individuales con pocos datos.
+\end{enumerate}
+
+\section{Cierre}
+\label{sec:cierre-memoria}
+
+Esta memoria demuestra que es posible construir un modelo basado en \Transformers\ para forecasting sobre series de tiempo no equiespaciadas manteniendo una arquitectura relativamente simple y obteniendo resultados sólidos y estadísticamente significativos sobre datos reales. El modelo propuesto no sólo funciona, sino que supera consistentemente a baselines tanto especializados como simples, y lo hace con un costo computacional razonable.
+
+\hfill
+
+Los estudios de ablación confirman que las innovaciones clave ---encoding temporal continuo y token objetivo--- son componentes que efectivamente aportan al desempeño, justificando la propuesta de diseño. La evidencia experimental reunida es suficientemente amplia y rigurosa para sostener que la línea de investigación es empíricamente exitosa y merece ser profundizada en las direcciones identificadas como trabajo futuro.

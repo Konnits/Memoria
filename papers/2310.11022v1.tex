@@ -1,0 +1,298 @@
+\documentclass[twocolumn]{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{authblk}
+
+% --- Preamble for formatting ---
+\title{Compatible Transformer for Irregularly Sampled Multivariate Time Series}
+
+\author[1*]{Yuxi Wei}
+\author[1]{Juntong Peng}
+\author[2]{Tong He}
+\author[1]{Chenxin Xu}
+\author[2]{Jian Zhang}
+\author[3]{Shirui Pan}
+\author[1\dagger]{Siheng Chen}
+
+\affil[1]{Cooperative Medianet Innovation Center, Shanghai Jiao Tong University}
+\affil[2]{Amazon Web Service}
+\affil[3]{University of Technology Sydney}
+
+\email{\{wyx3590236732, juntong.peng, xcxwakaka, sihengc\}@sjtu.edu.cn \\ \{hetong007, zhjwyz\}@gmail.com \quad s.pan@griffith.edu.au}
+
+% --- Document Start ---
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+To analyze multivariate time series, most previous methods assume regular subsampling of time series, where the interval between adjacent measurements and the number of samples remain unchanged. Practically, data collection systems could produce irregularly sampled time series due to sensor failures and interventions. However, existing methods designed for regularly sampled multivariate time series cannot directly handle irregularity owing to misalignment along both temporal and variate dimensions. To fill this gap, we propose Compatible Transformer (CoFormer), a transformer-based encoder to achieve comprehensive temporal-interaction feature learning for each individual sample in irregular multivariate time series. In CoFormer, we view each sample as a unique variate-time point and leverage intra-variate/inter-variate attentions to learn sample-wise temporal/interaction features based on intra-variate/inter-variate neighbors. With CoFormer as the core, we can analyze irregularly sampled multivariate time series for many downstream tasks, including classification and prediction. We conduct extensive experiments on 3 real-world datasets and validate that the proposed CoFormer significantly and consistently outperforms existing methods. Code will be available at https://github.com/MediaBrain-SJTU/CoFormer.
+\end{abstract}
+
+\textbf{Index Terms—}multivariate time series, irregularly sampling
+
+\section{INTRODUCTION}
+
+Multivariate time series is ubiquitous in many domains, such as business activities, industrial manufacturing, scientific experiments and multimedia [1]. It contains rich temporal information and stealthy interaction information among multiple variates. Multivariate time series analysis, including classification, regression and forecasting, is fundamental and pivotal in a wide range of real-world applications.
+
+To effectively collect, process and store time series, modern sensors usually take samples regularly and uniformly in time to produce a sequence of numbers. To analyze those regularly sampled time series, researchers from diverse disciplines come up with numerous powerful models, such as Fourier transform, autoregressive model and Kalman filter. In the deep learning era, many recurrent neural networks, including LSTM and GRU, have achieved great success in temporal feature learning. To further capture correlations among multiple variates, graph neural networks [2], [3] and attention operations [4] have also been adopted for interaction feature learning.
+
+However, real-world data collection systems could produce irregularly sampled time series due to sensor failures, interventions or external forces in physical systems [5]. In these scenarios, multiple variates are associated with asynchronous, nonuniformly sampled measurements, which are not well aligned along either temporal or variate dimensions. Therefore, most models designed for traditional regularly sampled time series cannot be used to directly handle irregularly sampled multivariate time series. Imputation is an intuitive way to deal with irregularity, but it inevitably introduces noises or artifacts. Thus, some recent methods try to directly handle the irregularly sampled multivariate time series without imputation. Some previous works consider variate-centric modeling and separate temporal/interaction feature learning into two stages, which learn temporal features for each variate and then explore interactions between variates. This does not explicitly and comprehensively exploit the information in each single irregular sample.
+
+% --- Figure Placeholder ---
+\begin{figure}[t]
+    % Description: The figure contains two subplots illustrating time series data. 
+    % (a) Regular time series: Shows multiple variates (colored dots) aligned vertically over time, labeled "Aligned".
+    % (b) Irregular time series: Shows the same variates but shifted horizontally at different time points, labeled "Misaligned".
+    % The figure demonstrates how irregularity causes misalignment along both time and variate dimensions.
+    \caption{An illustration of regular and irregular multivariate time series. Irregularity causes misalignment along both time and variate dimensions. The proposed CoFormer handles irregular data.}
+    \label{fig:irregular_time_series}
+\end{figure}
+
+In this work, we consider a novel sample-centric modeling method. The core idea is to view each irregular sample as an individual variate-time point, which makes each sample not rely on an aligned temporal or variate index, so that irregular sampling is no longer a matter. Based on this idea, we propose Compatible Transformer (CoFormer), a backbone encoder to learn comprehensive temporal and interaction information for each sample in irregularly sampled multivariate time series. For each variate-time point, we define an intra-variate neighbor set and inter-variate neighbor set, each of which is a set of variate-time points, regardless of misalignment. Based on intra-variate/inter-variate neighbors, we propose point-set-based intra-variate/inter-variate attentions to extract temporal/interaction information. Note that the proposed CoFormer is well compatible with both regular and irregular scenarios since our intra-variate/inter-variate neighbors are also well-defined for irregularly sampled multivariate time series.
+
+Based on the proposed CoFormer, we design systems to handle specific downstream tasks with irregularly sampled multivariate time series, respectively. We further conduct experiments on 3 real-world classification datasets, and CoFormer significantly outperforms state-of-the-art methods with AUROC improvement of 4.0\% and AUPRC improvement of 5.5\% on classification tasks. The method based on CoFormer can also be extended to related regression/prediction tasks.
+
+The main contributions are summarized as follows:
+\begin{itemize}
+    \item We propose CoFormer, a transformer-based encoder to extract intra-variate temporal and inter-variate interaction information for each individual sample in irregularly sampled multivariate time series.
+    \item We propose CoFormer-based classification system for analyzing irregularly sampled multivariate time series.
+    \item We conduct experiments on 3 real-world datasets and show that i) the proposed CoFormer outperforms all the baselines significantly; ii) CoFormer shows outstanding flexibility and robustness.
+\end{itemize}
+
+\vspace{2cm}
+\begin{flushleft}
+*Work done during internship at AWS. \quad $\dagger$Corresponding author.
+\end{flushleft}
+
+\section*{II. RELATED WORKS}
+
+\textbf{Multivariate time series analysis.} Multivariate time series tasks have been studied for a long time. There are many downstream tasks related to multivariate time series such as forecasting, classification and anomaly detection. In these tasks, both temporal and interaction information are important, thus extracting information from both parts is one focus of the previous works. For temporal information, some works tackle the forecasting problem by transforming the non-stationary process to stationary; recurrent neural networks (RNNs) models are widely used to model the temporal dependencies. For interaction information, some works model the interaction information by social operators [6]; graph structures are applied to model the interaction between variates [7]--[9]. Recently, attention mechanism and transformer structure show great power in sequential data, and are used for both temporal and interaction information extraction [10]. However, previous methods assume the sample rate and timestamps stay the same, therefore they cannot handle irregularly sampled time series tasks in which the interval between adjacent samples are not fixed and the number of measurements of each variate need not be the same.
+
+\textbf{Irregular time series analysis.} Irregular time series means that the timestamp of each measurement can be continuous but not fixed and discrete. This irregularity makes the data misaligned and many previous methods cannot be trivially modified to work. Some recent methods try to directly handle the irregularly sampled multivariate time series, and previous SOTA models mainly consider two approaches: imputation-based methods and variate-centric modeling. 1) The imputation-based methods, such as mTAND [11], IP-Net [12] and DGM$^2$ [13] , first convert irregular time series to regular data or embeddings through imputation-based methods, and then apply operations designed for the regular setting. But these converting processes bring inevitable noises and disturb the model learning. In comparison, our CoFormer directly handles raw irregular data without approximation errors during conversion. 2) The variate-centric modeling methods, such as SeFT [14] and Raindrop [5], combine all sample points of a variate together and then extract one unifying feature for each variate; that is, these methods aggregate temporal information once, then followed by extracting interaction information at the level of variates once. In contrast, our CoFormer keep iteratively and alternatively extracting temporal and interaction information for each sample point.
+
+\section*{III. PROBLEM FORMULATION}
+
+Mathematically, let $x$ be one continuous time series defined for all times $t \in \mathbb{R}$; that is, $x(t) \in \mathbb{R}$. In practice, we usually subsample the continuous time series $x$ to obtain a sequence of real numbers describing $x$. Let $\mathbf{m} = [m_1, m_2, \cdots, m_L]^T \in \mathbb{R}^L$ be a sequence of $L$ historical samples, where $m_\ell = x(-t_\ell)$ is the measurement sampled at time stamp $t_\ell \ge 0$ from time series $x$. Given a set of $N$ sequences $\mathcal{M} = \{\mathbf{m}^{(1)}, \mathbf{m}^{(2)}, \cdots, \mathbf{m}^{(N)}\}$ measured from multivariate continuous time series $\mathcal{X} = \{x^{(1)}, x^{(2)}, \cdots, x^{(N)}\}$, we aim to learn a model $f(\cdot)$, so that $\widehat{\mathcal{Y}} = f(\mathcal{M})$ is close to the ground-truth $\mathcal{Y}$. In the classification task, $\mathcal{Y}$ is the categories.
+
+Many previous works consider regular subsampling, where each historical sample $m_\ell^{(i)}$ is regularly measured from time series $x^{(i)}$ with the fixed time interval $\tau$; that is, the $\ell$-th measurement of the $i$-th variate is $m_\ell^{(i)} = x^{(i)}(-\ell \cdot \tau)$. In this case, all sequences share the synchronized timestamps and $\mathcal{M}$ can be well represented as a variate-time matrix.
+
+In this paper, we consider a general setting of irregular subsampling, where $m_\ell^{(i)} = x^{(i)}(-t_\ell^{(i)})$, reflecting that each time interval for a sequence or a timestamp is unique and can be different. Moreover, each sequence $\mathbf{m}^{(i)}$ could have a different number of samples. Therefore, sequences in $\mathcal{M}$ are not well synchronized. It is then inappropriate to design the model $f(\cdot)$ by using standard tools designed based on a regularly sampled prior, such as convolution and recurrent operations. To handle irregularly sampled data, we face two challenges: i) how to extract temporally consistent features from each irregularly sampled sequence; and ii) how to socially fuse features with multiple irregularly sampled sequences. The next section presents a Compatible Transformer, which leverages time encoding and novel attention designs to address the above two issues.
+
+\section*{IV. COMPATIBLE TRANSFORMER}
+
+This section proposes Compatible Transformer (CoFormer), which effectively extracts temporal and interaction information from irregularly sampled multivariate time series. The core idea is to abstract each sample as a variate-time point, which has unique temporal and variate meaning without assuming regularity; and then, we leverage irregularity-compatible attention operations from temporal and variate aspects to exploit those variate-time points.
+
+Mathematically, let the variate-time point $p_\ell^{(i)} = (i, t_\ell^{(i)})$ be the unique index of the $\ell$-th sample in the $i$-th variate, whose corresponding raw measurement is $m_\ell^{(i)}$. The overall procedure of CoFormer is as follows,
+\begin{align}
+    \mathbf{e}_\ell^{(i)} &= f_{\text{ME}}(m_\ell^{(i)}), \label{eq:1a} \\
+    \mathbf{u}_\ell^{(i)}, \mathbf{v}_\ell^{(i)} &= f_{\text{VTE}}(p_\ell^{(i)}), \label{eq:1b} \\
+    \mathbf{h}_\ell^{(i)} &= f_{\text{AGG}}(\mathbf{e}_\ell^{(i)}, \mathbf{u}_\ell^{(i)}, \mathbf{v}_\ell^{(i)}), \label{eq:1c} \\
+    \mathbf{t}_\ell^{(i)} &= f_{\text{Intra}}(\mathbf{h}_\ell^{(i)}, \mathcal{H}_{\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}}), \label{eq:1d} \\
+    \mathbf{s}_\ell^{(i)} &= f_{\text{Inter}}(\mathbf{t}_\ell^{(i)}, \mathcal{T}_{\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}}). \label{eq:1e}
+\end{align}
+
+Step (1a) uses a measurement encoder $f_{\text{ME}}(\cdot)$ to obtain the measurement embedding $\mathbf{e}_\ell^{(i)}$; Step (1b) uses variate and time encoder $f_{\text{VTE}}(\cdot)$ to obtain the variate code $\mathbf{u}_\ell^{(i)}$ and the time code $\mathbf{v}_\ell^{(i)}$; Step (1c) aggregates the measurement embedding, variate code and time code together to initialize the variate-time embedding $\mathbf{h}_\ell^{(i)}$; Step (1d) applies an intra-variate attention $f_{\text{Intra}}(\cdot)$ to obtain the intra-variate-attended variate-time embedding $\mathbf{t}_\ell^{(i)}$, where $\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}$ is a point set, defining the intra-variate neighbors of the point $p_\ell^{(i)}$ and $\mathcal{H}_{\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}}$ is the collection of intra-variate neighboring features; and Step (1e) applies an inter-variate attention $f_{\text{Inter}}(\cdot)$ to obtain the inter-variate-attended variate-time embedding $\mathbf{s}_\ell^{(i)}$, where $\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}$ is the inter-variate neighbors of the point $p_\ell^{(i)}$ and $\mathcal{T}_{\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}}$ is the collection of inter-variate neighbors' corresponding features after intra-variate attention.
+
+Note that i) the proposed CoFormer realizes temporally consistent features in Steps (1b) and (1d) as we encode the timestamp information in the feature embedding and leverage irregularity-compatible intra-variate attention to extract temporal information; ii) the proposed CoFormer promotes comprehensive interaction features in Step (1e) as we apply inter-variate attention; iii) the proposed CoFormer uses similar operations to handle both temporal and interaction information, which not only promotes the beauty of symmetry but also shows a general approach to get rid of regularity assumption, and compared with applying attention operation on all variate-time points, two kinds of neighbors make the information source more specific and reduce the time complexity from the square of all points to the square of the number of neighbors; and iv) Steps (1d) and (1e) can be applied successively for multiple times to obtain comprehensive temporal and interaction information.
+
+We now elaborate on the details of each step.
+
+\textbf{Measurement embedding.} The functionality is to map a scalar measurement to high-dimensional embedding space for the subsequent process. Here we simply use a multilayer perceptron (MLP) to implement the measurement encoder $f_{\text{ME}}(\cdot)$. The trainable parameters of the MLP are shared across the measurements belonging to the same variate.
+
+\textbf{Variate and time encoding.} Different from the position encoding in many other scenarios, here we have two dimensions and need to encode both variate and time. To encode variate, we consider dictionary learning to convert the serial number of a variate $i$ into a variate code $\mathbf{v}_\ell^{(i)} \in \mathbf{R}^d$ [15]. Each variate serial number $i$ is mapped into a trainable embedding vector, which corresponds to the $i$-th column of the dictionary. To encode time, we consider traditional trigonometric functions [16]. Any continuous-valued time stamp $t_\ell^{(i)}$ can be mapped into a time code $\mathbf{u}_\ell^{(i)} \in \mathbf{R}^\psi$ through
+\begin{equation}
+    (\mathbf{u}_\ell^{(i)})_{2k} = \sin(\frac{t_\ell^{(i)}}{10000^{2k/\psi}}), (\mathbf{u}_\ell^{(i)})_{2k+1} = \cos(\frac{t_\ell^{(i)}}{10000^{2k/\psi}}),
+    \label{eq:2}
+\end{equation}
+where $2k$ and $2k+1$ are the element indices of the code. Note that traditional position encoding encodes the fixed discrete positions, while we encode the continuous timestamp $t_\ell^{(i)}$ to handle irregular subsampling.
+
+\textbf{Variate-time aggregation.} Here we attach the variate code and time code to the measurement embedding. The initial variate-time embedding is obtained as
+\begin{equation*}
+    \mathbf{h}_\ell^{(i)} = \mathbf{v}_\ell^{(i)} \oplus \text{Linear}(\mathbf{e}_\ell^{(i)} \oplus \mathbf{u}_\ell^{(i)}),
+\end{equation*}
+where $\oplus$ is the concatenation operation and Linear($\cdot$) is a trainable linear layer. Because of aggregating variate and time codes, $\mathbf{h}_\ell^{(i)}$ inherits the context meaning and it works whatever the sample $p_\ell^{(i)}$ is irregularly sampled or not.
+
+\textbf{Intra-variate attention.} The functionality is to apply attention along the temporal dimension to learn long-range intra-variate temporal information. We construct intra-variate neighboring set for each variate-time point. Let $\mathcal{N}_{\text{Intra}(p_\ell^{(i)})} = \{p_1^{(i)}, p_2^{(i)}, \cdots, p_L^{(i)}\}$ be a point set that contains all the intra-variate neighbors of $p_\ell^{(i)}$; that is, all the variate-time points belonging to the same $i$-th variate. We next collect the corresponding features from each point in $\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}$; that is, $\mathcal{H}_{\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}} = \{\mathbf{h}_1^{(i)}, \mathbf{h}_2^{(i)}, \cdots, \mathbf{h}_L^{(i)}\}$. Finally, we leverage the standard multi-head attention to learn intra-variate temporal information. The intra-variate-attended embedding of $p_\ell^{(i)}$ is obtained as,
+\begin{equation}
+    \mathbf{t}_\ell^{(i)} = \text{MHA}_{\text{Intra}}(\mathbf{h}_\ell^{(i)}, \mathcal{H}_{\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}}, \mathcal{H}_{\mathcal{N}_{\text{Intra}(p_\ell^{(i)})}}),
+\end{equation}
+where $\text{MHA}_{\text{Intra}}(\cdot)$ denotes the multi-head attention among the intra-variate neighbors. Since attention operation can handle any length of inputs, our intra-variate attention encoder can deal with sequences with arbitrary length and any irregularly sampled timestep.
+
+\textbf{Inter-variate attention.} Multiple time series might contain rich correlated information. To exploit interactions, we apply attention within the features belonging to different variates to comprehensively learn short-range interaction information. In most scenarios, interactions are captured from multiple variates at the same timestamps. Since we deal with irregular sampling, variates are asynchronized and we thus need to consider more general inter-variate neighbors. Let $\mathcal{N}_{\text{Inter}(p_\ell^{(i)})} = \{p_m^{(j)} | |t_m^{(j)} - t_\ell^{(i)}| \leq \Delta \tau\}$ be a point set for inter-variate neighbors of $p_\ell^{(i)}$, which includes all the variate-time points whose sampled timestamp is close to $t_\ell^{(i)}$, and the inter-variate interaction information is extracted by multi-head attention among them. The intuition is that the smaller the interval between two timestamps is, the closer this relation between the samples is. For instance, the players usually predict the intention of others by the current positions, and medical sensors' measurements would fluctuate in a period together due to seizure of diseases. Note that i) the definition of $\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}$ is compatible for both regular and irregular cases as when $\Delta \tau = 0$, $\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}$ degenerates to the common synchronized setting; ii) instead of assigning a radius, we could also consider $K$-nearest neighbors in the temporal dimension, which is equivalent to some extend. Without annotation, the experiments follow the $K$-nearest neighbors implementation.
+
+Given the inter-variate neighborhood, the rest procedure is similar to intra-variate attention. Let $\mathcal{T}_{\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}} = \{\mathbf{t}_m^{(j)} | p_m^{(j)} \in \mathcal{N}_{\text{Inter}(p_\ell^{(i)})}\}$ be the intra-variate-attended features collected from all the points in $\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}$. We then obtain the inter-variate-attended embedding as
+\begin{equation}
+    \mathbf{s}_\ell^{(i)} = \text{MHA}_{\text{Inter}}(\mathbf{t}_\ell^{(i)}, \mathcal{T}_{\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}}, \mathcal{T}_{\mathcal{N}_{\text{Inter}(p_\ell^{(i)})}}),
+\end{equation}
+where $\text{MHA}_{\text{Inter}}(\cdot)$ denotes the multi-head attention among the inter-variate neighbors.
+
+\textbf{Successive feature learning.} To comprehensively learn temporal and interaction information, we successively apply intra-variate/inter-variate attention for multiple times. A complete successive attention layer consists of intra-variate attention, layernorm [17], residual connection [18] and inter-variate attention. We stack multiple successive attention layers to enrich the representation capability.
+
+\section{V. CLASSIFICATION SYSTEM}
+Consider the entire irregularly sampled multivariate time series as one observation. Here the specific aim is to classify an input observation into a predefined category. Our classification system consists of three modules: the proposed CoFormer for sample-wise feature learning, the aggregation module for observation-wise feature aggregation, and the classification module for discrimination; see Figure 3.
+
+\textbf{Sample-wise feature learning.} We use the proposed CoFormer to learn features for each irregular sample. Let $\mathcal{M}$ be an input observation of irregularly sampled multivariate time series. The collection of sample-wise features is obtained as $\mathcal{F} = \{\mathbf{f}_\ell^{(i)}\}_{i, \ell} = \text{CoFormer}(\mathcal{M})$, where $\mathbf{f}_\ell^{(i)}$ is the feature embedding of the sample $p_\ell^{(i)}$ output by the last inter-variate attention. Note that $i$ is the variate index, ranging from 1 to $N$; while $\ell$ is the time index and each variate might have a different number of samples.
+
+\textbf{Observation-wise feature aggregation.} To realize classification, we need to aggregate all the sample-wise features to be a unified feature for the entire observation. To aggregate along the temporal dimension and get the variate-wise feature, we first take the average: $\mathbf{f}_{\text{mean}}^{(i)} = \sum_{\ell=1}^L \mathbf{f}_\ell^{(i)} / L$, where $L$ is the sample number of the $i$-th variate. Since averaging does not take each sample's importance into account, we further use an attention operator to introduce importance; that is, $\mathbf{f}^{(i)} = \text{MHA}(\mathbf{f}_{\text{mean}}^{(i)}, \mathcal{F}^{(i)}, \mathcal{F}^{(i)})$, where $\text{MHA}(\cdot)$ denotes the multi-head attention and $\mathcal{F}^{(i)} = \{\mathbf{f}_\ell^{(i)}\}_{\ell=1}^L$ is a collection of the $i$-th variate's feature. To aggregate along the variate dimension and get the observation-wise feature, we simply take the average and the final observation-wise feature is $\mathbf{f} = \sum_{i=1}^N \mathbf{f}^{(i)} / N$.
+
+\textbf{Classification.} The observation-wise feature is input into a common readout layer classifier implemented by MLP which outputs the final classification score.
+
+\textbf{Loss function.} The common loss functions designed for classification task can be used. Here we consider the cross-entropy loss in our experiments.
+
+\section{VI. EXPERIMENTS}
+\subsection{A. Datasets and metrics}
+We evaluate our model on three healthcare and human activity classification datasets:(1) \textbf{P19:P19} [22](PhysioNet Sepsis Early Prediction Challenge 2019) dataset contains 38,803 patients, where each patient is monitored by 34 irregularly sampled sensors. We follow the pre-processes in [5]. Each patient is labelled by occurrence of sepsis within the next 6 hours. (2) \textbf{P12:P12} [23](PhysioNet Mortality Prediction Challenge 2012) dataset includes 11,988 patients (observations), after removing 12 inappropriate observations following [5]. Each observation contains multivariate time series with 36 sensors. Each observation is associated with a binary label which indicates the length of stay in ICU, where negative label means hospitalization is not longer than 3 days and positive label marks hospitalization is longer than 3 days.(3) \textbf{PAM:PAM} [24] (PAMAP2 Physical Activity Monitoring) dataset measures daily living activities of 9 subjects with 3 inertial measurement units. Following [5], we modify it to suit the scenario of irregular time series classification. After modification, PAM dataset contains 5,333 segments (observations) of sensory signals. Each observation is measured by 17 sensors and contains 600 continuous samples with a sampling frequency 100 Hz. To make the time series irregular, we randomly remove 60\% samples. PAM is labelled into 8 classes where each class represents an activity of daily living.
+
+Following [5], \textbf{AUROC} and \textbf{AUPRC} are used as metrics on \textbf{P19} and \textbf{P12} datasets; \textbf{Accuracy}, \textbf{Precision}, \textbf{Recall} and \textbf{F1 score} are used on PAM dataset. Following [25].
+
+\subsection*{B. Implement details}
+In classification tasks, following settings in [5], we use a batch size of 128, a learning rate of 0.0001 and an epoch of 20 in 3 classification datasets. The other parameters of the baselines are consistent with [5], too. We use Adam optimizer for gradient-based optimization. For \textbf{CoFormer}, all of the MLPs are 3 layers with ReLU as an activation function. All of the hidden sizes are set as 256, including the time code. The variate code dimension is 32. The number of multi-heads is 8 for all attention operations. The batch size, learning rate, epoch and optimizer are the same as the baselines. Note that, \textbf{P19} and \textbf{P12} datasets contain static vectors for each observation. Following [5], we use a linear projection to map it into a high dimension and concatenate it with the observation-wise feature before the classifier. The number of successive layers is 4, the number of neighbors is 30.
+
+\subsection*{C. Quantitative results on classification tasks}
+We randomly split the datasets into training (80\%), validation(10\%) and test(10\%) set following [5]. The indices of these splits are fixed across all methods. Table I compares \textbf{CoFormer} with a series of state-of-the-art time series classification methods. The original MTGNN [19] cannot handle irregular data. To adapt it to our setting, we impute the missing data with linear interpolation for preprocessing. To make Transformer [16] deal with common regular data, Transformer-mean also uses linear interpolation; see more details in the supplementary material. The experimental results show that our \textbf{CoFormer} gets the best performance across all of the datasets and all the metrics. Compared to Raindrop [5], \textbf{CoFormer} outperforms with average AUROC improvement of 4.0\% and average AUPRC improvement of 5.5\% on \textbf{P19} and \textbf{P12} datasets. CoFormer shows strong feature learning capability for irregular multivariate time series.
+
+\begin{table*}[t]
+\centering
+\caption{Classification results of irregular methods and CoFormer. CoFormer is the best model on the 3 irregular multivariate classification datasets. We use 5 different splits of the datasets and calculate the mean and variance of the 5 results. The splits are fixed across all methods. Imputat. indicates imputation-based methods, and Var. indicates variate-centric methods.}
+\label{tab:classification_results}
+\begin{tabular}{lccc cc ccc}
+\toprule
+Method & \multicolumn{2}{c}{P19} & \multicolumn{2}{c}{P12} & \multicolumn{4}{c}{PAM} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-9}
+& AUROC & AUPRC & AUROC & AUPRC & Accuracy & Precision & Recall & F1 score \\
+\midrule
+Transformer [16] & 83.2$\pm$1.3 & 47.6$\pm$3.8 & 65.2$\pm$5.6 & 95.7$\pm$1.6 & 83.5$\pm$1.5 & 84.8$\pm$1.5 & 86.0$\pm$1.2 & 85.0$\pm$1.3 \\
+Transformer-mean & 84.1$\pm$1.7 & 47.4$\pm$1.4 & 66.8$\pm$4.2 & 95.9$\pm$1.1 & 83.7$\pm$2.3 & 84.9$\pm$2.6 & 86.4$\pm$2.1 & 85.1$\pm$2.4 \\
+MTGNN [19] & 81.9$\pm$6.2 & 39.9$\pm$8.9 & 67.5$\pm$3.1 & 96.4$\pm$0.7 & 83.4$\pm$1.9 & 85.2$\pm$1.7 & 86.1$\pm$1.9 & 85.9$\pm$2.4 \\
+GRU-D [20] & 83.9$\pm$1.7 & 46.9$\pm$2.1 & 67.2$\pm$3.6 & 95.9$\pm$2.1 & 83.3$\pm$1.6 & 84.6$\pm$1.2 & 85.2$\pm$1.6 & 84.8$\pm$1.2 \\
+stop\&hop [21] & 81.5$\pm$2.3 & 47.0$\pm$3.1 & 68.5$\pm$2.2 & 96.2$\pm$0.8 & 84.1$\pm$1.7 & 84.9$\pm$1.5 & 86.2$\pm$2.0 & 85.5$\pm$1.7 \\
+\midrule
+\multirow{3}{*}{\rotatebox{90}{Var. Imputat.}} & mTAND [11] & 80.4$\pm$1.3 & 32.4$\pm$1.8 & 65.3$\pm$1.7 & 96.5$\pm$1.2 & 74.6$\pm$4.3 & 74.3$\pm$4.0 & 79.5$\pm$2.8 & 76.8$\pm$3.4 \\
+& IP-Net [12] & 84.6$\pm$1.3 & 38.1$\pm$3.7 & 72.5$\pm$2.4 & 96.7$\pm$0.3 & 74.3$\pm$3.8 & 75.6$\pm$2.1 & 77.9$\pm$2.2 & 76.6$\pm$2.8 \\
+& DGM$^2$ - O [13] & 86.7$\pm$3.4 & 44.7$\pm$11.7 & 71.2$\pm$2.5 & 96.9$\pm$0.4 & 82.4$\pm$2.3 & 85.2$\pm$1.2 & 83.9$\pm$2.3 & 84.3$\pm$1.8 \\
+\midrule
+SeFT [14] & 78.7$\pm$2.4 & 31.1$\pm$2.8 & 66.8$\pm$0.8 & 96.2$\pm$0.2 & 67.1$\pm$2.2 & 70.0$\pm$2.4 & 68.2$\pm$1.5 & 68.5$\pm$1.8 \\
+Raindrop [5] & 87.0$\pm$2.3 & 51.8$\pm$5.5 & 72.1$\pm$1.3 & 97.0$\pm$0.4 & 88.5$\pm$1.5 & 89.9$\pm$1.5 & 89.9$\pm$0.6 & 89.8$\pm$1.0 \\
+\midrule
+\textbf{CoFormer (Ours)} & \textbf{89.2 $\pm$1.8} & \textbf{57.3$\pm$3.3} & \textbf{76.5$\pm$2.9} & \textbf{97.5$\pm$0.5} & \textbf{91.2$\pm$0.6} & \textbf{92.4$\pm$0.7} & \textbf{93.7$\pm$0.7} & \textbf{92.8$\pm$0.5} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection*{D. Ablation studies}
+\textbf{Effect of architecture components.} We validate the influence of each component introduced in Section IV, including intra-variate attention encoder (Intra-A), inter-variate attention encoder (Inter-A), time encoding (TE), variate encoding (VE) and attention aggregator (AR), as shown in Table II. The full CoFormer achieves the best performance, indicating that every component is useful to the model.
+
+\begin{table}[h]
+\centering
+\caption{Ablation study of each component, including intra-variate attention encoder (Intra-A), inter-variate attention encoder (Inter-A), time encoding (TE), variate encoding (VE) and attention aggregator (AR) on \textbf{P19}. Each component shows benefits to the model.}
+\label{tab:ablation}
+\begin{tabular}{ccccc cc}
+\toprule
+Intra-A & Inter-A & TE & VE & AR & AUROC & AUPRC \\
+\midrule
+\checkmark & \checkmark & & & & 82.1$\pm$1.4 & 47.3$\pm$1.7 \\
+\checkmark & & \checkmark & & & 84.5$\pm$2.1 & 49.6$\pm$2.2 \\
+& \checkmark & \checkmark & & & 85.1$\pm$2.4 & 50.2$\pm$2.9 \\
+\checkmark & & & \checkmark & & 85.3$\pm$1.9 & 51.7$\pm$2.6 \\
+& & & & \checkmark & 86.6$\pm$2.2 & 53.2$\pm$2.5 \\
+\checkmark & \checkmark & \checkmark & \checkmark & \checkmark & \textbf{89.2$\pm$1.8} & \textbf{57.3$\pm$3.3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+    \centering
+    % Placeholder for the actual image content
+    \fbox{\parbox[c][4cm][c]{0.9\linewidth}{\centering [Figure 4: Ablation study of number of neighbors K on P19 dataset. (a) ROC, (b) PRC]}}
+    \caption{Ablation study of number of neighbors $K$ on \textbf{P19} dataset. As $K$ increases, the performance also increases in the beginning, while a too large $K$ slightly worsens it.}
+    \label{fig:ablation_neighbors}
+\end{figure}
+
+\noindent \textbf{Effect of the number of K nearest neighbors.} The effect of the number of the $K$ nearest neighbors is shown in Figure 4. As the $K$ increases, the performance also increases at the beginning, but a too large $K$ slightly worsen it. Based on the figure we suggest setting $K$ to be close to the number of variates, as in this way the inter-variate neighbors tend to cover samples from different and most of the variates. Besides, the performance only changes slightly with a large range of different values of $K$, which suggests that CoFormer is not sensitive to the tuning of this parameter.
+
+\noindent \textbf{Effect of the number of successive layers.} We explore the effect of the number of successive attention layers and illustrate in Figure 5. Conceptually, a larger number of successive layers brings stronger representation capability, and that matches the results from 1 to 4 layers. With 4 layers the model complexity saturates for \textbf{P19} dataset, thus increasing it further does not provide further performance improvements.
+
+\begin{figure}[t]
+    \centering
+    % Left subplot placeholder
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        % Placeholder for Plot (a) ROC
+        \fbox{\parbox[c][3cm][c]{\linewidth}{\centering AUOC vs Layers}} 
+        (a) ROC
+    \end{minipage}
+    \hfill
+    % Right subplot placeholder
+    \begin{minipage}{0.45\textwidth}
+        \centering
+        % Placeholder for Plot (b) PRC
+        \fbox{\parbox[c][3cm][c]{\linewidth}{\centering AUPRC vs Layers}} 
+        (b) PRC
+    \end{minipage}
+    \caption{Ablation study of number of layers on P19 dataset. The performance increases first, and then becomes stable.}
+    \label{fig:ablation_study}
+\end{figure}
+
+\section*{VII. CONCLUSION}
+We propose CoFormer, a transformer-based encoder that works for both regularly and irregularly sampled multivariate time series. CoFormer views each sample as a variate-time point, and applies intra-variate/inter-variate attention operation to extract both temporal/interaction information from corresponding neighbors. Experiments reveal that CoFormer outperforms existing baselines and shows outstanding flexibility and robustness under various irregular settings.
+
+\section*{ACKNOWLEDGEMENT}
+This research is supported by NSFC under Grant 62171276 and the Science and Technology Commission of Shanghai Municipal under Grant 21511100900 and 22DZ2229005.
+
+\section*{REFERENCES}
+\begin{thebibliography}{99}
+
+\bibitem{1} B. Esmael, A. Arnaout, R. K. Fruhwirth, and G. Thonhauser, ``Multivariate time series classification by combining trend-based and value-based approximations,'' in \textit{International Conference on Computational Science and Its Applications}. Springer, 2012, pp. 392--403.
+
+\bibitem{2} C. Xu, M. Li, Z. Ni, Y. Zhang, and S. Chen, ``Groupnet: Multiscale hypergraph neural networks for trajectory prediction with relational reasoning,'' in \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2022, pp. 6498--6507.
+
+\bibitem{3} C. Xu, Y. Wei, B. Tang, S. Yin, Y. Zhang, and S. Chen, ``Dynamic-group-aware networks for multi-agent trajectory prediction with relational reasoning,'' \textit{arXiv preprint arXiv:2206.13114}, 2022.
+
+\bibitem{4} C. Xu, R. T. Tan, Y. Tan, S. Chen, X. Wang, and Y. Wang, ``Auxiliary tasks benefit 3d skeleton-based human motion prediction,'' in \textit{Proceedings of the IEEE/CVF International Conference on Computer Vision}, 2023, pp. 9509--9520.
+
+\bibitem{5} X. Zhang, M. Zeman, T. Tsiligkaridis, and M. Zitnik, ``Graph-guided network for irregularly sampled multivariate time series,'' \textit{arXiv preprint arXiv:2110.05357}, 2021.
+
+\bibitem{6} C. Xu, W. Mao, W. Zhang, and S. Chen, ``Remember intentions: Retrospective-memory-based trajectory prediction,'' in \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2022, pp. 6488--6497.
+
+\bibitem{7} Y. Hu, S. Chen, Y. Zhang, and X. Gu, ``Collaborative motion prediction via neural motion message passing,'' in \textit{Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, 2020, pp. 6319--6328.
+
+\bibitem{8} C. Xu, R. T. Tan, Y. Tan, S. Chen, Y. G. Wang, X. Wang, and Y. Wang, ``Eqmotion: Equivariant multi-agent motion prediction with invariant interaction reasoning,'' in \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2023, pp. 1410--1420.
+
+\bibitem{9} B. Tang, Y. Zhong, C. Xu, W.-T. Wu, U. Neumann, Y. Zhang, S. Chen, and Y. Wang, ``Collaborative uncertainty benefits multi-agent multimodal trajectory forecasting,'' \textit{IEEE Transactions on Pattern Analysis and Machine Intelligence}, 2023.
+
+\bibitem{10} W. Mao, C. Xu, Q. Zhu, S. Chen, and Y. Wang, ``Leapfrog diffusion model for stochastic trajectory prediction,'' in \textit{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, 2023, pp. 5517--5526.
+
+\bibitem{11} S. N. Shukla and B. M. Marlin, ``Multi-time attention networks for irregularly sampled time series,'' \textit{arXiv preprint arXiv:2101.10318}, 2021.
+
+\bibitem{12} ---, ``Interpolation-prediction networks for irregularly sampled time series,'' \textit{arXiv preprint arXiv:1909.07782}, 2019.
+
+\bibitem{13} Y. Wu, J. Ni, W. Cheng, B. Zong, D. Song, Z. Chen, Y. Liu, X. Zhang, H. Chen, and S. B. Davidson, ``Dynamic gaussian mixture based deep generative model for robust forecasting on sparse multivariate time series,'' in \textit{Proceedings of the AAAI Conference on Artificial Intelligence}, vol. 35, no. 1, 2021, pp. 651--659.
+
+\bibitem{14} M. Horn, M. Moor, C. Bock, B. Rieck, and K. Borgwardt, ``Set functions for time series,'' in \textit{International Conference on Machine Learning}. PMLR, 2020, pp. 4353--4363.
+
+\bibitem{15} Q. Le and T. Mikolov, ``Distributed representations of sentences and documents,'' in \textit{International conference on machine learning}. PMLR, 2014, pp. 1188--1196.
+
+\bibitem{16} A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, \L. Kaiser, and I. Polosukhin, ``Attention is all you need,'' \textit{Advances in neural information processing systems}, vol. 30, 2017.
+
+\bibitem{17} J. L. Ba, J. R. Kiros, and G. E. Hinton, ``Layer normalization,'' \textit{arXiv preprint arXiv:1607.06450}, 2016.
+
+\bibitem{18} K. He, X. Zhang, S. Ren, and J. Sun, ``Deep residual learning for image recognition,'' in \textit{Proceedings of the IEEE conference on computer vision and pattern recognition}, 2016, pp. 770--778.
+
+\bibitem{19} Z. Wu, S. Pan, G. Long, J. Jiang, X. Chang, and C. Zhang, ``Connecting the dots: Multivariate time series forecasting with graph neural networks,'' in \textit{Proceedings of the 26th ACM SIGKDD international conference on knowledge discovery \& data mining}, 2020, pp. 753--763.
+
+\bibitem{20} Z. Che, S. Purushotham, K. Cho, D. Sontag, and Y. Liu, ``Recurrent neural networks for multivariate time series with missing values,'' \textit{Scientific reports}, vol. 8, no. 1, pp. 1--12, 2018.
+
+\bibitem{21} T. Hartvigsen, W. Gerych, J. Thadadarajssiri, X. Kong, and E. Rundensteiner, ``Stop\&hop: Early classification of irregular time series,'' in \textit{Proceedings of the 31st ACM International Conference on Information \& Knowledge Management}, 2022, pp. 696--705.
+
+\bibitem{22} M. A. Reyna, C. Josef, S. Seyed, R. Jeter, S. P. Shashikumar, M. B. Westover, A. Sharma, S. Nemati, and G. D. Clifford, ``Early prediction of sepsis from clinical data: the physionet/computing in cardiology challenge 2019,'' in \textit{2019 Computing in Cardiology (CinC)}. IEEE, 2019, pp. Page--1.
+
+\bibitem{23} A. L. Goldberger, L. A. Amaral, L. Glass, J. M. Hausdorff, P. C. Ivanov, R. G. Mark, J. E. Mietus, G. B. Moody, C.-K. Peng, and H. E. Stanley, ``Physiobank, physiotoolkit, and physionet: components of a new research resource for complex physiologic signals,'' \textit{circulation}, vol. 101, no. 23, pp. e215--e220, 2000.
+
+\bibitem{24} A. Reiss and D. Stricker, ``Introducing a new benchmarked dataset for activity monitoring,'' in \textit{2012 16th international symposium on wearable computers}. IEEE, 2012, pp. 108--109.
+
+\bibitem{25} A. Alahi, K. Goel, V. Ramanathan, A. Robicquet, L. Fei-Fei, and S. Savarese, ``Social lstm: Human trajectory prediction in crowded spaces,'' in \textit{Proceedings of the IEEE conference on computer vision and pattern recognition}, 2016, pp. 961--971.
+
+\end{thebibliography}
+
+\end{document}

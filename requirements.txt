@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/nightly/cu130
+--pre
+torch
+torchvision
+pytest==9.0.1
+pandas==2.3.3
+ipykernel
+pyyaml==6.0.3
+matplotlib
+plotly
+scipy
+colorama
+Mime
+nbformat>=4.2.0

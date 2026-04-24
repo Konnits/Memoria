@@ -1,0 +1,26 @@
+csv_path: data/processed/real_data_1.csv
+time_column: timestamp
+
+# Variables de entrada (features) por tiempo
+feature_columns:
+  - valor
+
+# Variables objetivo a predecir (pueden ser las mismas u otras)
+target_columns:
+  - valor
+
+# Splits temporales
+train_ratio: 0.7
+val_ratio: 0.15
+
+# Configuración de las ventanas de historia
+history_length: 500
+min_history_length: 20
+target_offset_min: 1
+target_offset_max: 30
+num_targets: 4
+
+# DataLoader
+batch_size: 128
+num_workers: 4
+shuffle_train: true

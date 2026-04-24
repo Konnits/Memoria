@@ -1,0 +1,31 @@
+num_epochs: 30
+device: "cuda"
+loss_name: "mse"
+grad_clip_norm: 1.0
+log_every_n_steps: 50
+input_noise_std: 0.02
+early_stopping_patience: 8
+early_stopping_min_delta: 0.0001
+restore_best_weights: true
+use_amp: true
+enable_cuda_runtime_optimizations: true
+use_torch_compile: false
+torch_compile_mode: "reduce-overhead"
+torch_compile_fullgraph: false
+
+checkpoint_dir: "experiments/pretrain_real_data1"
+save_best_on: "val_rmse"
+
+seed: 42
+
+optimizer:
+  optimizer_name: "adam"
+  lr: 0.001
+  weight_decay: 0.0
+  momentum: 0.9
+  betas: [0.9, 0.999]
+
+  scheduler_name: "cosine"
+  scheduler_step_size: 10
+  scheduler_gamma: 0.1
+  scheduler_T_max: 30

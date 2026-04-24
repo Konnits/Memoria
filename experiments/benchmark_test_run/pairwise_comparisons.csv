@@ -1,0 +1,10 @@
+model_a,model_b,metric,n_datasets,wins_a,wins_b,ties,mean_improvement_pct,wilcoxon_stat,wilcoxon_p,mean_a,ci_95_a,mean_b,ci_95_b,error
+Custom,STraTS_Adapter,test_mse,1.0,1.0,0.0,0.0,65.67,1.0,0.5,0.321669,"[0.321669, 0.321669]",0.937003,"[0.937003, 0.937003]",
+Custom,Persistence,test_mse,1.0,1.0,0.0,0.0,68.73,1.0,0.5,0.321669,"[0.321669, 0.321669]",1.028645,"[1.028645, 1.028645]",
+,,,,,,,,,,,,,,No hay datasets en común entre Custom y Linear
+Custom,STraTS_Adapter,test_rmse,1.0,1.0,0.0,0.0,41.41,1.0,0.5,0.567158,"[0.567158, 0.567158]",0.967989,"[0.967989, 0.967989]",
+Custom,Persistence,test_rmse,1.0,1.0,0.0,0.0,44.08,1.0,0.5,0.567158,"[0.567158, 0.567158]",1.014221,"[1.014221, 1.014221]",
+,,,,,,,,,,,,,,No hay datasets en común entre Custom y Linear
+Custom,STraTS_Adapter,test_mae,1.0,1.0,0.0,0.0,52.17,1.0,0.5,0.351467,"[0.351467, 0.351467]",0.734848,"[0.734848, 0.734848]",
+Custom,Persistence,test_mae,1.0,1.0,0.0,0.0,60.91,1.0,0.5,0.351467,"[0.351467, 0.351467]",0.899018,"[0.899018, 0.899018]",
+,,,,,,,,,,,,,,No hay datasets en común entre Custom y Linear

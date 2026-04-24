@@ -1,0 +1,35 @@
+num_epochs: 25
+device: "cuda"          # o "cpu" según tu entorno
+loss_name: "mse"
+grad_clip_norm: 1.0
+log_every_n_steps: 50
+early_stopping_patience: 8
+early_stopping_min_delta: 0.00005
+restore_best_weights: true
+use_amp: true
+enable_cuda_runtime_optimizations: true
+use_torch_compile: false
+torch_compile_mode: "reduce-overhead"
+torch_compile_fullgraph: false
+
+# Carpeta donde se guardarán logs, checkpoints y configs usadas
+checkpoint_dir: "experiments/exp_real_data1"
+
+# Métrica para decidir el "mejor" modelo
+save_best_on: "val_rmse"
+
+# Semilla global
+seed: 42
+
+optimizer:
+  optimizer_name: "adamw"
+  lr: 0.001
+  weight_decay: 0.001
+  momentum: 0.9
+  betas: [0.9, 0.999]
+
+  scheduler_name: "cosine_warmup"
+  scheduler_step_size: 10
+  scheduler_gamma: 0.1
+  scheduler_T_max: 25
+  warmup_epochs: 1

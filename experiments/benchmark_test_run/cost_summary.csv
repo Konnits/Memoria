@@ -1,0 +1,5 @@
+Modelo,n_params_trainable,n_params_total,train_time_s,epochs_run
+Custom,530690.0,530690.0,10074.29,20.0
+Linear,10753.0,10753.0,506.79,9.0
+Persistence,1.0,1.0,0.0,0.0
+STraTS_Adapter,229061.0,229061.0,2219.39,16.0

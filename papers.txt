@@ -1,0 +1,6 @@
+https://arxiv.org/abs/2107.14293
+https://github.com/Leezekun/ViTST
+https://arxiv.org/abs/2310.11022
+
+- timesFM (google)
+- prophet (Meta)

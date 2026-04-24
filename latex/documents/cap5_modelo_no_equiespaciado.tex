@@ -1,0 +1,423 @@
+\chapter{Modelo propuesto para series de tiempo no equiespaciadas}
+\label{cap:modelo-no-equiespaciado}
+
+En este capítulo se describe en detalle el modelo propuesto para abordar la predicción de series de tiempo \emph{no equiespaciadas} utilizando una arquitectura tipo Transformer. El diseño busca mantener, en la medida de lo posible, la estructura y ventajas del Transformer original, introduciendo modificaciones específicas para tratar directamente con \emph{timestamps} irregulares sin necesidad de re-muestrear la serie sobre una malla uniforme.
+
+\hfill
+
+Recordando la notación del Capítulo~\ref{cap:series-tiempo}, consideremos una serie temporal multivariada observada en instantes
+\[
+    t_1 < t_2 < \dots < t_T, \quad t_i \in \mathbb{R},
+\]
+no necesariamente equiespaciados, y valores observados
+\[
+    x_i = x(t_i) \in \mathbb{R}^{D}, \quad i = 1,\dots,T.
+\]
+El objetivo del modelo es aprender una función
+\[
+    f_\theta: \bigl(\{(t_{i-h+1}, x_{i-h+1}), \dots, (t_i, x_i)\}, t^\star\bigr) \mapsto \hat{y}(t^\star),
+\]
+capaz de predecir el valor futuro (o pasado) en un \emph{timestamp} objetivo $t^\star$, a partir de una historia de longitud variable $h$.
+
+\hfill
+
+La implementación concreta se realiza mediante un módulo \textttbreak{TimeSeriesTransformer}, que combina:
+\begin{itemize}
+    \item un \emph{embedding} de valores continuos (\textttbreak{FeatureEmbedding}),
+    \item un \emph{encoding temporal continuo} basado en \emph{timestamps} reales (\textttbreak{TimePositionalEncoding}),
+    \item un \emph{flag} para distinguir el token de historia del token objetivo (\textttbreak{TargetFlagEmbedding}),
+    \item un \emph{encoder Transformer} estándar sobre la secuencia enriquecida,
+    \item y una cabeza de regresión sobre el token objetivo (\textttbreak{RegressionHead}).
+\end{itemize}
+
+En las secciones siguientes se detalla cada uno de estos componentes y cómo interactúan con el flujo de datos definido en el Capítulo~\ref{cap:series-tiempo}.
+
+\section{Objetivos de diseño}
+\label{sec:objetivos-diseno-modelo}
+
+El modelo propuesto se construyó alrededor de los siguientes objetivos de diseño:
+
+\begin{enumerate}
+    \item \textbf{Respetar la irregularidad temporal}: evitar, en la medida de lo posible, el re-muestreo a una malla equiespaciada, trabajando directamente con los \emph{timestamps} originales.
+    \item \textbf{Separar claramente valor y tiempo}: representar por separado las variables de entrada (temperatura, presión, etc.) y la información temporal, combinándolas recién a nivel de \emph{embedding}.
+    \item \textbf{Mantener compatibilidad con el Transformer estándar}: reutilizar la mayor parte de la estructura de atención multi-cabeza y bloques encoder descritos en el Capítulo~\ref{cap:transformers-series-tiempo}, de modo que las extensiones sean lo menos invasivas posible.
+    \item \textbf{Manejar historias de longitud variable y horizontes de predicción heterogéneos}: permitir que, durante el entrenamiento, el modelo vea ejemplos con distintas longitudes de historia y con diferentes \emph{offsets de predicción}, con el fin de mejorar su robustez.
+    \item \textbf{Soportar fácilmente inferencia multi-step}: a través de una capa de inferencia (\textttbreak{Predictor} y \textttbreak{RollingForecaster}) que oculte los detalles de construcción de secuencias y des-escalado.
+\end{enumerate}
+
+\section{Representación de entradas y construcción de ejemplos}
+\label{sec:entradas-ejemplos}
+
+\subsection{Separación entre valores y timestamps}
+
+A nivel de datos crudos, el modelo recibe:
+\begin{itemize}
+    \item un arreglo de \emph{timestamps} $(t_1,\dots,t_T)$ ya ordenado,
+    \item una matriz de valores $V \in \mathbb{R}^{T \times D_{\text{total}}}$ que contiene:
+    \begin{itemize}
+        \item las primeras $D_{\text{in}}$ columnas como variables de entrada (\emph{features}),
+        \item las siguientes $D_{\text{out}}$ como variables objetivo (\emph{targets}), cuando no se especifica un arreglo de \emph{targets} separado.
+    \end{itemize}
+\end{itemize}
+
+Esta organización se materializa en la clase \textttbreak{TimeSeriesDataset}, que recibe:
+\begin{itemize}
+    \item \textttbreak{values}: matriz $[T, D_{\text{total}}]$,
+    \item \textttbreak{timestamps}: vector $[T]$,
+    \item los parámetros \textttbreak{input\_dim} y \textttbreak{output\_dim} para separar entrada y salida.
+\end{itemize}
+
+El preprocesamiento descrito en el Capítulo~\ref{cap:series-tiempo} (normalización \textttbreak{StandardScaler}, splits temporales, etc.) se aplica antes de construir el \textttbreak{TimeSeriesDataset}.
+
+\subsection{Ventanas de historia y targets en TimeSeriesDataset}
+\label{sec:timeseriesdataset-detalle}
+
+Cada ejemplo del \textttbreak{TimeSeriesDataset} se construye a partir de tres elementos clave:
+\begin{enumerate}
+    \item \textbf{Longitud máxima de historia} (\textttbreak{history\_length}, $h_{\max}$): número máximo de puntos pasados considerados.
+    \item \textbf{Longitud mínima de historia} (\textttbreak{min\_history\_length}, $h_{\min}$): permite muestrear historias de longitud variable entre $h_{\min}$ y $h_{\max}$.
+    \item \textbf{Offset(s) de predicción} (\textttbreak{target\_offset} o \textttbreak{target\_offset\_choices}): distancia (en índices) entre el \emph{anchor} de la historia y el índice del target.
+\end{enumerate}
+
+Para cada ejemplo se elige un índice \emph{anchor} $i$ tal que exista suficiente historia hacia atrás y suficiente espacio hacia adelante para el target. De forma simplificada:
+\[
+    i \in \{h_{\max}, h_{\max} + \texttt{stride}, \dots, T - 1 - o_{\max}\},
+\]
+donde $o_{\max}$ es el máximo \emph{offset} posible tomado de \textttbreak{target\_offset\_choices} (o de \textttbreak{target\_offset} si sólo se usa un valor fijo).
+
+Dado un \emph{anchor} $i$:
+\begin{itemize}
+    \item se muestrea una longitud de historia $h \in [h_{\min}, h_{\max}]$ (si \textttbreak{min\_history\_length} es distinto de \textttbreak{history\_length}, de lo contrario $h = h_{\max}$),
+    \item se define la historia como
+    \[
+        \{(t_{i-h+1}, x_{i-h+1}), \dots, (t_i, x_i)\},
+    \]
+    \item se elige un \emph{offset} de predicción $o$ desde \texttt{target\_offset\_choices} y se define el índice objetivo
+    \[
+        j = i + o,
+    \]
+    \item el \emph{timestamp} objetivo es $t^\star = t_j$ y el valor objetivo es $y^\star = y_j$.
+\end{itemize}
+
+El resultado que retorna \textttbreak{TimeSeriesDataset} para cada ejemplo es un diccionario con:
+\begin{itemize}
+    \item \textttbreak{past\_values}: matriz $[h, D_{\text{in}}]$,
+    \item \textttbreak{past\_timestamps}: vector $[h]$,
+    \item \textttbreak{target\_timestamp}: escalar $t^\star$,
+    \item \textttbreak{target\_values}: vector $[D_{\text{out}}]$.
+\end{itemize}
+
+Esta representación todavía no está en el formato que consume el Transformer; para ello se introduce el \textttbreak{SequenceBuilder}.
+
+\subsection{Construcción de secuencias con token objetivo}
+\label{sec:sequence-builder-detalle}
+
+El \textttbreak{SequenceBuilder} es responsable de transformar el ejemplo anterior en la secuencia final que se alimenta al modelo. Conceptualmente, se añade un \emph{token objetivo} al final de la historia:
+\[
+    \underbrace{(t_{i-h+1}, x_{i-h+1})}_{\text{historia}}, \dots,
+    \underbrace{(t_i, x_i)}_{\text{último de la historia}},
+    \underbrace{(t^\star, \tilde{x}^\star)}_{\text{token objetivo}}
+\]
+donde $\tilde{x}^\star$ es un \emph{placeholder} para los valores del token objetivo. En la implementación se ofrecen dos opciones:
+\begin{itemize}
+    \item \textttbreak{"zeros"}: $\tilde{x}^\star$ es el vector de ceros (no se aporta información de valor al token objetivo).
+    \item \textttbreak{"last"}: $\tilde{x}^\star$ copia el último vector de la historia ($x_i$).
+\end{itemize}
+
+Después de esta operación, el \textttbreak{SequenceBuilder} devuelve:
+\begin{itemize}
+    \item \textttbreak{input\_values}: matriz $[L, D_{\text{in}}]$ con $L = h+1$ (historia + token objetivo),
+    \item \textttbreak{input\_timestamps}: vector $[L]$ con los \emph{timestamps} de historia y $t^\star$,
+    \item \textttbreak{is\_target\_mask}: vector booleano $[L]$ con \textttbreak{True} sólo en la posición del token objetivo,
+    \item \textttbreak{target\_values}, \textttbreak{target\_timestamp}: iguales a los del \textttbreak{TimeSeriesDataset}.
+\end{itemize}
+
+La idea central es que el token objetivo queda definido por la combinación de una máscara que identifica su rol y de su \emph{timestamp}. La máscara sólo indica que esa posición debe interpretarse como una consulta de predicción; el timestamp fija la fecha concreta a la que apunta esa consulta. Dicho de otro modo, el horizonte de predicción no se controla con un identificador discreto adicional, sino asignando al token objetivo el timestamp $t^\star$ y dejando que \textttbreak{TimePositionalEncoding} transforme ese tiempo en una representación continua.
+
+El módulo \textttbreak{build\_collate\_fn} se encarga posteriormente de agrupar estos ejemplos en batch, realizando el correspondiente \emph{padding} cuando las longitudes $L$ de las secuencias del batch difieren.
+
+\section{Arquitectura del TimeSeriesTransformer no equiespaciado}
+\label{sec:arquitectura-modelo}
+
+La arquitectura central está implementada en la clase \textttbreak{TimeSeriesTransformer}, parametrizada por \textttbreak{TimeSeriesTransformerConfig}. A grandes rasgos, el flujo interno es:
+
+\begin{enumerate}
+    \item Proyección de valores continuos a la dimensión del modelo (\textttbreak{FeatureEmbedding}).
+    \item Cálculo del encoding temporal continuo (\textttbreak{TimePositionalEncoding}).
+    \item Embedding del \emph{flag} que distingue historia vs token objetivo (\textttbreak{TargetFlagEmbedding}).
+    \item Suma de las tres contribuciones para formar los \emph{tokens} de entrada.
+    \item Paso por el \emph{encoder Transformer} (\textttbreak{TransformerEncoder}).
+    \item Extracción del estado del token objetivo y paso por una cabeza de regresión (\textttbreak{RegressionHead}).
+\end{enumerate}
+
+\subsection{Embedding de valores continuos}
+\label{sec:feature-embedding}
+
+El módulo \textttbreak{FeatureEmbedding} implementa una proyección lineal de las variables de entrada:
+\[
+    e^{(\text{val})}_t = W_{\text{val}} x_t + b_{\text{val}}, \quad x_t \in \mathbb{R}^{D_{\text{in}}},\; e^{(\text{val})}_t \in \mathbb{R}^{d_{\text{model}}}.
+\]
+Para un batch de tamaño $B$ y longitud de secuencia $L$, la entrada tiene forma $[B, L, D_{\text{in}}]$ y la salida $[B, L, d_{\text{model}}]$. Opcionalmente puede aplicarse una \textttbreak{LayerNorm} sobre la dimensión $d_{\text{model}}$ tras la proyección.
+
+\subsection{Encoding temporal continuo}
+\label{sec:time-encoding}
+
+El componente clave para manejar \emph{timestamps} irregulares es el encoding temporal continuo. En lugar de asumir posiciones enteras $\{0,1,2,\dots\}$, se trabaja directamente con los tiempos reales. Para cada secuencia en el batch se calcula primero un tiempo relativo:
+\[
+    \tau_t = \frac{t - t_0}{s_{\text{time}}},
+\]
+donde $t_0$ es el primer \emph{timestamp} de la secuencia y $s_{\text{time}}$ es un factor de escala temporal (por ejemplo, $900$ segundos para que un paso unitario corresponda a $15$ minutos).
+
+\hfill
+
+La elección de trabajar con $\tau_t$ en lugar de $t$ crudo introduce una normalización explícita de escala, lo que ayuda a que el modelo se enfoque en \emph{estructuras temporales relativas} más que en valores absolutos de tiempo. Esta decisión es especialmente importante en el token objetivo: al cambiar $t^\star$, cambia también $\tau_{\text{target}}$ y, por ende, cambia el vector $e^{(\text{time})}_{\text{target}}$ incluso si el token sigue ocupando la última posición de la secuencia. Así, el modelo puede distinguir entre ``predecir dentro de 15 minutos'' y ``predecir dentro de 3 horas'' sin modificar la arquitectura del encoder.
+
+\subsubsection{Modo sinusoidal (fijo)}
+
+En el modo sinusoidal, para cada dimensión $k$ del embedding temporal se define:
+\[
+    \text{PE}_{t,2k} = \sin\left(\frac{\tau_t}{\omega_k}\right), \quad
+    \text{PE}_{t,2k+1} = \cos\left(\frac{\tau_t}{\omega_k}\right),
+\]
+donde las frecuencias $\omega_k$ se construyen de manera análoga al \emph{positional encoding} original de \cite{vaswani2017attention}. Esto produce un vector $e^{(\text{time})}_t \in \mathbb{R}^{d_{\text{model}}}$ que codifica de forma suave la posición relativa en el tiempo.
+
+Si bien este encoding es simple y no requiere parámetros entrenables, presenta una limitación importante: las frecuencias $\omega_k$ son fijas y están determinadas por la fórmula del Transformer original, sin adaptarse a la escala temporal específica de cada conjunto de datos. Además, la elección del factor de escala $s_{\text{time}}$ introduce un hiperparámetro sensible que debe calibrarse manualmente.
+
+\subsubsection{Modo Time2Vec (aprendido)}
+\label{sec:time2vec}
+
+Para superar las limitaciones del encoding sinusoidal fijo, se implementa una variante basada en Time2Vec \cite{kazemi2019time2vec}, que reemplaza las frecuencias fijas por componentes aprendidos durante el entrenamiento. La formulación es:
+\[
+    \text{Time2Vec}(\tau)[i] =
+    \begin{cases}
+        \tanh(\omega_0 \cdot \tau + \varphi_0), & \text{si } i = 0 \quad \text{(componente lineal)}, \\
+        \sin(\omega_i \cdot \tau + \varphi_i), & \text{si } i > 0 \quad \text{(componentes periódicos)},
+    \end{cases}
+\]
+donde los pesos $\omega_i$ y las fases $\varphi_i$ son parámetros entrenables. El resultado es un vector $e^{(\text{time})}_t \in \mathbb{R}^{d_{\text{model}}}$, compuesto por:
+\begin{itemize}
+    \item un componente lineal ($i=0$) que captura tendencias aperiódicas y derivas temporales,
+    \item $d_{\text{model}} - 1$ componentes periódicos que capturan patrones cíclicos a frecuencias \emph{aprendidas} del dato.
+\end{itemize}
+
+A diferencia de la formulación original de Time2Vec, el componente lineal se envuelve en una función $\tanh(\cdot)$ para acotar su salida al rango $[-1, 1]$, igualando el rango de los componentes periódicos. Esto es necesario porque, a diferencia de $\sin(\cdot)$ que está naturalmente acotado, el término $\omega_0 \cdot \tau + \varphi_0$ crece sin límite con $\tau$ y puede producir desbordamiento numérico cuando se utiliza precisión mixta (\emph{mixed precision}, formato float16, cuyo rango máximo es $\pm 65504$). La función $\tanh$ preserva la capacidad del componente de representar tendencias monótonas locales, al tiempo que garantiza estabilidad numérica.
+
+A diferencia del modo sinusoidal, Time2Vec presenta tres ventajas concretas:
+\begin{enumerate}
+    \item Las frecuencias $\omega_i$ se aprenden durante el entrenamiento, adaptándose automáticamente a la escala temporal de cada dataset.
+    \item Las fases $\varphi_i$ permiten representar desfases temporales que el encoding sinusoidal fijo no puede capturar.
+    \item El componente lineal captura tendencias monótonas que las funciones periódicas por sí solas no pueden modelar.
+\end{enumerate}
+
+El sesgo inductivo periódico (función seno) previene el sobreajuste que podría ocurrir con un MLP completamente libre, mientras que la capacidad de aprendizaje permite al modelo descubrir las escalas temporales relevantes sin intervención manual.
+
+\subsection{Embedding de flag historia/target}
+\label{sec:flag-embedding}
+
+El módulo \textttbreak{TargetFlagEmbedding} introduce información explícita sobre el rol de cada token en la secuencia. A partir del vector booleano \textttbreak{is\_target\_mask} $\in \{0,1\}^{L}$, se construye un \emph{embedding} discreto:
+\[
+    f_t =
+    \begin{cases}
+        e_{\text{historia}} \in \mathbb{R}^{d_{\text{model}}}, & \text{si el token es de historia}, \\
+        e_{\text{target}} \in \mathbb{R}^{d_{\text{model}}}, & \text{si el token es el objetivo}.
+    \end{cases}
+\]
+En la práctica, se usa una \textttbreak{nn.Embedding} de tamaño 2:
+\begin{itemize}
+    \item índice 0 $\rightarrow$ token de historia,
+    \item índice 1 $\rightarrow$ token objetivo.
+\end{itemize}
+Esto produce un tensor $e^{(\text{flag})}_t \in \mathbb{R}^{d_{\text{model}}}$ para cada posición.
+
+Conviene subrayar que este embedding no pretende codificar el horizonte de predicción. Su función es únicamente distinguir entre observaciones ya vistas y posiciones objetivo; la información temporal fina sigue residiendo en el encoding continuo basado en timestamps.
+
+\subsection{Combinación de embeddings y paso por el encoder}
+\label{sec:embedding-transformer}
+
+Una vez calculados los tres componentes:
+\[
+    e^{(\text{val})}_t, \quad e^{(\text{time})}_t, \quad e^{(\text{flag})}_t,
+\]
+se combinan por suma:
+\[
+    z_t = e^{(\text{val})}_t + e^{(\text{time})}_t + e^{(\text{flag})}_t,
+\]
+de modo que la secuencia completa entra al encoder como un tensor $Z \in \mathbb{R}^{B \times L \times d_{\text{model}}}$.
+
+El encoder está formado por una pila de $N$ bloques, cada uno compuesto por:
+\begin{itemize}
+    \item auto-atención multi-cabeza,
+    \item bloque de red \emph{feed-forward} ($\text{FFN}$),
+    \item conexiones residuales y normalización por capa.
+\end{itemize}
+
+Opcionalmente se puede aplicar una máscara causal si se desea restringir la atención a posiciones pasadas (modo autoregresivo). Sin embargo, en la configuración base de este trabajo se opera en modo no-autoregresivo, permitiendo que el token objetivo atienda a toda la historia.
+
+Gracias al mecanismo de \emph{padding mask}, el encoder puede manejar secuencias de distinta longitud dentro del mismo batch, ignorando correctamente las posiciones de relleno.
+
+\subsubsection{Sesgo de atención temporal}
+\label{sec:temporal-attention-bias}
+
+Dado que el encoding temporal se inyecta mediante suma a los embeddings de entrada, la información temporal llega al mecanismo de atención de forma indirecta. Para reforzar la conciencia temporal dentro de la atención, se introduce un \emph{sesgo de atención temporal} (\emph{temporal attention bias}) que modifica directamente los scores de atención en función de la distancia temporal entre tokens.
+
+Formalmente, para cada cabeza de atención $h$, los scores modificados son:
+\[
+    \text{score}_h(i, j) = \frac{Q_i \cdot K_j^\top}{\sqrt{d_{\text{head}}}} + b_h(\Delta t_{i,j}),
+\]
+donde el sesgo temporal se define como:
+\[
+    b_h(\Delta t) = \text{clamp}\!\left(-\frac{|\Delta t|}{\tau_h},\; -50,\; 0\right), \quad \tau_h = \exp\bigl(\text{clamp}(\alpha_h,\, -5,\, 5)\bigr),
+\]
+y $\alpha_h$ es un parámetro escalar aprendido por cada cabeza.
+
+La formulación incorpora dos restricciones de estabilidad numérica. Primero, el parámetro $\alpha_h$ se restringe al intervalo $[-5, 5]$, lo que mantiene $\tau_h \in [e^{-5}, e^{5}] \approx [0{,}007,\; 148]$; sin esta restricción, si $\alpha_h$ evoluciona hacia valores muy negativos durante el entrenamiento, $\tau_h \to 0$ y el cociente $|\Delta t|/\tau_h \to \infty$, produciendo valores de sesgo que desestabilizan el \emph{softmax}. Segundo, el sesgo resultante se acota al rango $[-50, 0]$, evitando que valores extremos saturen la distribución de atención y propaguen gradientes no finitos.
+
+Este mecanismo tiene tres propiedades deseables:
+\begin{enumerate}
+    \item \textbf{Localidad temporal aprendida}: cada cabeza aprende su propia escala temporal $\tau_h$. Cabezas con $\tau_h$ pequeño se especializan en dependencias de corto plazo, mientras que cabezas con $\tau_h$ grande capturan relaciones de largo plazo.
+    \item \textbf{Sensibilidad a la irregularidad}: a diferencia del \emph{positional encoding} ordinal, el sesgo opera sobre diferencias temporales reales ($|t_i - t_j|$), no sobre índices de posición. Dos observaciones a 10 segundos de distancia reciben un sesgo diferente que dos observaciones a 2 horas, independientemente de su posición ordinal en la secuencia.
+    \item \textbf{Complementariedad}: el sesgo se suma a los scores estándar de atención, por lo que no reemplaza sino que complementa la capacidad del modelo de atender por contenido.
+\end{enumerate}
+
+Este enfoque está inspirado en ALiBi \cite{press2022train}, adaptado para \emph{timestamps} continuos en lugar de posiciones discretas.
+
+\subsection{Cabeza de regresión en el token objetivo}
+\label{sec:regression-head}
+
+Una vez obtenido el tensor de salida del encoder,
+\[
+    H \in \mathbb{R}^{B \times L \times d_{\text{model}}},
+\]
+se extrae el estado correspondiente al token objetivo usando \textttbreak{is\_target\_mask}. Si hay exactamente un token objetivo por secuencia, esto produce:
+\[
+    h^{(\text{target})}_b \in \mathbb{R}^{d_{\text{model}}}, \quad b = 1,\dots,B.
+\]
+
+La \textttbreak{RegressionHead} aplica sobre cada $h^{(\text{target})}_b$ una transformación lineal (o una pequeña MLP opcional) para producir la predicción:
+\[
+    \hat{y}_b = W_{\text{out}} h^{(\text{target})}_b + b_{\text{out}} \in \mathbb{R}^{D_{\text{out}}}.
+\]
+
+En la configuración utilizada en los experimentos, se emplea la versión simple de una sola capa lineal, lo que reduce el número de parámetros y facilita la interpretación de la contribución del encoder.
+
+\section{Manejo de historias variables y offsets de predicción}
+\label{sec:historias-y-offsets}
+
+Una de las características distintivas del modelo propuesto es la capacidad de entrenar con historias de longitud variable y diferentes \emph{offsets de predicción} dentro del mismo dataset. Esto se logra combinando:
+\begin{itemize}
+    \item la lógica de muestreo en \textttbreak{TimeSeriesDataset} (parámetros \textttbreak{min\_history\_length}, \textttbreak{history\_length}, \textttbreak{target\_offset\_choices}),
+    \item la flexibilidad del \textttbreak{collate\_fn} para manejar secuencias de tamaños distintos (vía \emph{padding}),
+    \item la invariancia del encoder a longitudes específicas de secuencia.
+\end{itemize}
+
+Desde un punto de vista conceptual, durante el entrenamiento el modelo observa ejemplos de la forma:
+\[
+    \Bigl(\{(t_{i-h+1}, x_{i-h+1}), \dots, (t_i, x_i)\}, t^\star, y^\star\Bigr),
+\]
+donde $h$ varía entre $h_{\min}$ y $h_{\max}$, y $t^\star$ puede corresponder a distintos índices futuros $i + o$, con $o$ tomado de \textttbreak{target\_offset\_choices}. Esto fuerza al modelo a aprender:
+\begin{itemize}
+    \item aprovechar tanto historias cortas como largas,
+    \item producir predicciones coherentes para horizontes de predicción heterogéneos.
+\end{itemize}
+
+En los experimentos de este trabajo se analizan explícitamente los efectos de:
+\begin{enumerate}
+    \item usar historias fijas vs historias variables,
+    \item entrenar con un único \emph{offset} vs múltiples \emph{offsets} en \textttbreak{target\_offset\_choices}.
+\end{enumerate}
+
+\section{Función de pérdidas, métricas y bucle de entrenamiento}
+\label{sec:perdidas-y-entrenamiento}
+
+\subsection{Función de pérdida}
+
+Dado un batch de tamaño $B$, el modelo produce predicciones
+\[
+    \hat{Y} \in \mathbb{R}^{B \times D_{\text{out}}}, \quad
+    Y \in \mathbb{R}^{B \times D_{\text{out}}}
+\]
+son los targets correspondientes. La implementación base utiliza el error cuadrático medio (MSE) como función de pérdida:
+\[
+    \mathcal{L}_{\text{MSE}}(\hat{Y}, Y) =
+        \frac{1}{B D_{\text{out}}} \sum_{b=1}^B \sum_{d=1}^{D_{\text{out}}}
+        \bigl(\hat{y}_{b,d} - y_{b,d}\bigr)^2.
+\]
+No obstante, el módulo \textttbreak{losses.py} permite cambiar fácilmente a MAE (\emph{L1}) o Huber, para estudiar robustez frente a \emph{outliers}.
+
+\subsection{Métricas de evaluación}
+
+Además de la pérdida de entrenamiento, se calcula un conjunto de métricas de regresión a nivel de validación:
+\begin{itemize}
+    \item MSE y RMSE,
+    \item MAE,
+    \item MAPE (\emph{Mean Absolute Percentage Error}).
+\end{itemize}
+Estas métricas se implementan en \textttbreak{compute\_regression\_metrics} y se almacenan por época, lo que permite analizar la evolución del entrenamiento y comparar configuraciones de modelo e hiperparámetros.
+
+\subsection{Optimización y scheduler}
+
+El entrenamiento se gestiona mediante la clase \textttbreak{Trainer}, que se apoya en:
+\begin{itemize}
+    \item un optimizador configurable (\textttbreak{OptimizerConfig}), con opciones como Adam, AdamW o SGD,
+    \item un \emph{scheduler} de \emph{learning rate} (por ejemplo, CosineAnnealingLR).
+\end{itemize}
+
+En la mayoría de los experimentos se emplea Adam con parámetros estándar, coherente con la práctica común en modelos Transformer. Adicionalmente, se aplica \emph{gradient clipping} opcional (parámetro \textttbreak{grad\_clip\_norm}) para evitar explosión de gradientes.
+
+\hfill
+
+La configuración de entrenamiento (\textttbreak{TrainingConfig}) se carga desde archivos YAML, facilitando la reproducción de experimentos.
+
+\section{Inferencia y pronósticos multi-step}
+\label{sec:inferencia-y-rolling}
+
+Para simplificar el uso del modelo entrenado en escenarios reales, se definió una capa de inferencia de alto nivel:
+
+\begin{itemize}
+    \item \textbf{\textttbreak{Predictor}}: envuelve al \textttbreak{TimeSeriesTransformer} y se encarga de:
+    \begin{itemize}
+        \item aplicar los \emph{scalers} adecuados a las entradas,
+        \item construir la secuencia con token objetivo a partir de $(\text{historia}, t^\star)$,
+        \item des-escalar las predicciones de salida.
+    \end{itemize}
+    \item \textbf{\textttbreak{RollingForecaster}}: utiliza un \textttbreak{Predictor} para generar pronósticos multi-step sobre una lista de \emph{timestamps} objetivo, manteniendo fija la historia observada (\emph{modo} \textttbreak{"fixed\_history"}).
+\end{itemize}
+
+Formalmente, dado un conjunto de \emph{timestamps} futuro $\{t^{\star}_1,\dots,t^{\star}_K\}$ y una historia $(t_{i-h+1}, x_{i-h+1}),\dots,(t_i, x_i)$, el \textttbreak{RollingForecaster} produce:
+\[
+    \hat{Y}_{\text{future}} =
+    \begin{bmatrix}
+        \hat{y}(t^{\star}_1) \\
+        \vdots \\
+        \hat{y}(t^{\star}_K)
+    \end{bmatrix}
+    \in \mathbb{R}^{K \times D_{\text{out}}}.
+\]
+
+Este módulo permite, por ejemplo, construir curvas de pronóstico sobre un horizonte temporal arbitrario, sin necesidad de rehacer manualmente el bucle de construcción de secuencias.
+
+\section{Comentarios sobre complejidad y limitaciones}
+\label{sec:complejidad-limitaciones}
+
+Desde el punto de vista computacional, el modelo conserva la complejidad cuadrática típica del Transformer en la longitud de la secuencia:
+\[
+    \mathcal{O}(L^2 \cdot d_{\text{model}}),
+\]
+donde $L$ es la longitud efectiva (historia + token objetivo). El cálculo del encoding temporal y del sesgo de atención temporal tienen coste lineal y cuadrático en $L$ respectivamente, pero en la práctica ambos son despreciables frente al coste de la auto-atención.
+
+En cuanto al número de parámetros adicionales introducidos por Time2Vec y el sesgo de atención temporal, estos son mínimos:
+\begin{itemize}
+    \item Time2Vec añade $2 \cdot d_{\text{model}}$ parámetros (frecuencias y fases),
+    \item el sesgo de atención temporal añade $H$ parámetros (uno por cabeza de atención),
+\end{itemize}
+lo que representa una fracción insignificante del total de parámetros del modelo.
+
+\hfill
+
+En cuanto a limitaciones, cabe destacar:
+\begin{itemize}
+    \item La complejidad cuadrática puede volverse prohibitiva para historias muy largas. En esta memoria se trabaja con historias de tamaño moderado, pero una línea de trabajo evidente consiste en explorar variantes de atención local o dispersa.
+    \item El modelo asume que las observaciones son ruidosas pero completas; el tratamiento explícito de valores faltantes (por ejemplo, máscaras de observabilidad o imputación integrada) se deja como trabajo futuro.
+\end{itemize}
+
+A pesar de estas limitaciones, el diseño propuesto ofrece una vía concreta y relativamente simple para adaptar los Transformers a series de tiempo no equiespaciadas, manteniendo al mismo tiempo una implementación clara y modular que puede ser extendida en trabajos posteriores.

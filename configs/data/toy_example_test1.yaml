@@ -1,0 +1,25 @@
+csv_path: data/processed/synthetic_data_1.csv
+time_column: timestamp
+
+# Variables de entrada (features) por tiempo
+feature_columns:
+  - value
+
+# Variables objetivo a predecir (pueden ser las mismas u otras)
+target_columns:
+  - value
+
+# Splits temporales
+train_ratio: 0.7
+val_ratio: 0.15
+
+# Configuración de las ventanas de historia
+history_length: 50      # ej: 100 pasos de historia
+target_offset_min: 1
+target_offset_max: 25
+num_targets: 5
+
+# DataLoader
+batch_size: 512
+num_workers: 4
+shuffle_train: true
