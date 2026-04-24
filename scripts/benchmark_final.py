@@ -151,6 +151,60 @@ _SMALL_THRESHOLD = 100_000    # < 100K params → training_small
 _LARGE_THRESHOLD = 1_000_000  # > 1M params  → training_large
 
 
+def _estimate_dataset_time_scale(
+    timestamps: np.ndarray,
+    fallback: float = 900.0,
+) -> float:
+    """
+    Estima un time_scale robusto por dataset usando la mediana de deltas > 0.
+    """
+    ts = np.asarray(timestamps, dtype=np.float64)
+    if ts.size < 3:
+        return float(fallback)
+
+    diffs = np.diff(ts)
+    diffs = diffs[np.isfinite(diffs)]
+    diffs = diffs[diffs > 0]
+    if diffs.size == 0:
+        return float(fallback)
+
+    # Clamp conservador para evitar escalas patológicas.
+    return float(np.clip(np.median(diffs), 1.0, 86_400.0))
+
+
+def _build_balanced_subset(
+    df: pd.DataFrame,
+    required_models: list[str],
+    dataset_col: str = "Dataset_ID",
+    seed_col: str = "Seed",
+    model_col: str = "Modelo",
+) -> pd.DataFrame:
+    """
+    Filtra filas para quedarse solo con pares (dataset, seed) que tienen
+    resultados para todos los modelos requeridos.
+    """
+    if not required_models:
+        return df.copy()
+
+    df_req = df[df[model_col].isin(required_models)].copy()
+    if df_req.empty:
+        return df_req
+
+    n_required = len(required_models)
+    pair_counts = (
+        df_req.groupby([dataset_col, seed_col])[model_col]
+        .nunique()
+        .reset_index(name="n_models")
+    )
+    valid_pairs = pair_counts[pair_counts["n_models"] == n_required][[dataset_col, seed_col]]
+    if valid_pairs.empty:
+        return df_req.iloc[0:0].copy()
+
+    valid_pairs = valid_pairs.assign(__keep__=1)
+    df_balanced = df_req.merge(valid_pairs, on=[dataset_col, seed_col], how="inner")
+    return df_balanced.drop(columns=["__keep__"])
+
+
 def select_training_config(
     model: torch.nn.Module,
     cfg_small: TrainingConfig,
@@ -164,7 +218,7 @@ def select_training_config(
     el número de parámetros del modelo.
 
     - < 100K params  → cfg_small  (lr=0.001, warmup=2, epochs=30)
-    - 100K-1M params → cfg_default (config original del benchmark)
+    - 100K-1M params → cfg_default (alineado con epochs=30, warmup=2)
     - > 1M params    → cfg_large  (lr=0.0002, warmup=5, epochs=60)
     """
     n_params = count_parameters(model)
@@ -177,6 +231,14 @@ def select_training_config(
     else:
         chosen = copy.deepcopy(cfg_default)
         tier = "default"
+
+    # Custom (familia mediana) usa regularización algo más fuerte.
+    # Evita tocar Small/Large para mantener comparativas limpias.
+    if model_name.startswith("Custom") and ("Small" not in model_name and "Large" not in model_name):
+        chosen.optimizer_config.weight_decay = max(
+            float(chosen.optimizer_config.weight_decay),
+            0.003,
+        )
 
     logger.info(
         f"    [CONFIG] {model_name} ({n_params:,} params) → training tier '{tier}' "
@@ -192,6 +254,7 @@ def select_training_config(
 # ======================================================================
 def build_models(
     model_cfg,
+    dataset_time_scale: float,
     use_events: bool,
     model_input_dim: int,
     input_dim: int,
@@ -213,6 +276,7 @@ def build_models(
     model_cfg.output_dim = output_dim
     model_cfg.use_sensor_embedding = bool(use_events)
     model_cfg.num_sensors = input_dim if use_events else 0
+    model_cfg.time_scale = float(dataset_time_scale)
 
     d_model = model_cfg.d_model
 
@@ -224,6 +288,7 @@ def build_models(
     cfg_small.output_dim = output_dim
     cfg_small.use_sensor_embedding = bool(use_events)
     cfg_small.num_sensors = input_dim if use_events else 0
+    cfg_small.time_scale = float(dataset_time_scale)
 
     # Nota: modelos Large desactivados temporalmente para priorizar tiempo de cómputo.
     # Para reactivarlos, descomentar este bloque y las líneas de instanciación más abajo.
@@ -238,6 +303,26 @@ def build_models(
     trainable["Custom-Small"] = True
     models["Custom"] = TimeSeriesTransformer(copy.deepcopy(model_cfg))
     trainable["Custom"] = True
+
+    def _make_readout_variant_config(base_cfg, *, readout_mode: str):
+        cfg = copy.deepcopy(base_cfg)
+        cfg.readout_mode = readout_mode
+        return cfg
+
+    models["Custom-AttnPool-Small"] = TimeSeriesTransformer(
+        _make_readout_variant_config(
+            cfg_small,
+            readout_mode="target_plus_attention_pool",
+        )
+    )
+    trainable["Custom-AttnPool-Small"] = True
+    models["Custom-AttnPool"] = TimeSeriesTransformer(
+        _make_readout_variant_config(
+            model_cfg,
+            readout_mode="target_plus_attention_pool",
+        )
+    )
+    trainable["Custom-AttnPool"] = True
     # models["Custom-Large"] = TimeSeriesTransformer(copy.deepcopy(cfg_large))
     # trainable["Custom-Large"] = True
 
@@ -491,6 +576,8 @@ def prepare_data(
     ts_val, X_val, y_val = process_split(df_val)
     ts_test, X_test, y_test = process_split(df_test)
 
+    adaptive_time_scale = _estimate_dataset_time_scale(ts_train, fallback=900.0)
+
     v_scal, t_scal = StandardScaler(), StandardScaler()
     X_train_s = v_scal.fit_transform(X_train)
     y_train_s = t_scal.fit_transform(y_train)
@@ -599,6 +686,7 @@ def prepare_data(
         "n_train": len(ds_tr),
         "n_val": len(ds_va),
         "n_test": len(ds_te),
+        "adaptive_time_scale": adaptive_time_scale,
     }
 
 
@@ -704,6 +792,9 @@ def main():
             f"  Muestras: train={data['n_train']}, "
             f"val={data['n_val']}, test={data['n_test']}"
         )
+        logger.info(
+            f"  time_scale adaptativo (train median dt): {data['adaptive_time_scale']:.3f}"
+        )
 
         for seed in args.seeds:
             logger.info(
@@ -714,8 +805,11 @@ def main():
             set_global_seed(seed, deterministic=False)
 
             # Construir modelos frescos para cada semilla
+            model_cfg_runtime = copy.deepcopy(model_cfg_base)
+            model_cfg_runtime.time_scale = float(data["adaptive_time_scale"])
             models, trainable = build_models(
-                copy.deepcopy(model_cfg_base),
+                model_cfg_runtime,
+                data["adaptive_time_scale"],
                 data["use_events"],
                 data["model_input_dim"],
                 data["input_dim"],
@@ -893,7 +987,57 @@ def main():
         logger.warning("No hay resultados para analizar.")
         return
 
+    # Si hubo reanudaciones, conservar la última corrida por (dataset, seed, modelo).
+    dedup_cols = ["Dataset_ID", "Seed", "Modelo"]
+    if all(c in df_all.columns for c in dedup_cols):
+        before = len(df_all)
+        df_all = df_all.drop_duplicates(subset=dedup_cols, keep="last").copy()
+        after = len(df_all)
+        if after != before:
+            logger.info(f"  [DEDUP] Filas únicas por (dataset, seed, modelo): {before} -> {after}")
+
     df_all.to_csv(out_csv, index=False)
+
+    # Diagnóstico de cobertura por (dataset, seed): cuántos modelos hay realmente.
+    coverage = (
+        df_all.groupby(["Dataset_ID", "Seed"])["Modelo"]
+        .nunique()
+        .reset_index(name="n_models")
+        .sort_values(["Dataset_ID", "Seed"])
+    )
+    coverage_path = os.path.join(exp_dir, "coverage_by_dataset_seed.csv")
+    coverage.to_csv(coverage_path, index=False)
+    logger.info(f"  Cobertura por dataset/seed guardada en {coverage_path}")
+
+    preferred_models = [
+        "Custom",
+        "Custom-AttnPool",
+        "Custom-Small",
+        "Custom-AttnPool-Small",
+        "Linear",
+        "NoTimeEncoding",
+        "STraTS_Adapter",
+    ]
+    available_models = sorted(df_all["Modelo"].unique().tolist())
+    required_models = [m for m in preferred_models if m in available_models]
+    if len(required_models) < 2:
+        required_models = available_models
+
+    df_stats = _build_balanced_subset(df_all, required_models)
+    if not df_stats.empty:
+        balanced_path = os.path.join(exp_dir, "benchmark_final_balanced.csv")
+        df_stats.to_csv(balanced_path, index=False)
+        logger.info(
+            f"  [BALANCED] Análisis estadístico en subset balanceado con modelos={required_models}; "
+            f"filas={len(df_stats)}"
+        )
+        logger.info(f"  [BALANCED] CSV guardado en {balanced_path}")
+    else:
+        logger.warning(
+            "  [BALANCED] No hay subset balanceado para los modelos objetivo; "
+            "se usará el CSV completo para estadísticas."
+        )
+        df_stats = df_all
 
     # Importar análisis
     from statistical_analysis import (
@@ -903,11 +1047,11 @@ def main():
     )
 
     test_metrics = ["test_mse", "test_rmse", "test_mae"]
-    available_metrics = [m for m in test_metrics if m in df_all.columns]
+    available_metrics = [m for m in test_metrics if m in df_stats.columns]
 
     if available_metrics:
         report = generate_full_report(
-            df_all,
+            df_stats,
             reference_model="Custom",
             metrics=available_metrics,
         )
@@ -920,7 +1064,7 @@ def main():
         logger.info(f"  Reporte guardado en {report_path}")
 
         # Tabla resumen
-        summary = generate_summary_table(df_all, available_metrics)
+        summary = generate_summary_table(df_stats, available_metrics)
         summary_path = os.path.join(exp_dir, "summary_table.csv")
         summary.to_csv(summary_path, index=False)
         logger.info(f"  Tabla resumen guardada en {summary_path}")
@@ -928,12 +1072,12 @@ def main():
         # Comparaciones emparejadas
         comparisons = []
         other_models = [
-            m for m in df_all["Modelo"].unique() if m != "Custom"
+            m for m in df_stats["Modelo"].unique() if m != "Custom"
         ]
         for metric in available_metrics:
             for other in other_models:
                 comp = compute_pairwise_comparison(
-                    df_all, "Custom", other, metric
+                    df_stats, "Custom", other, metric
                 )
                 comparisons.append(comp)
 

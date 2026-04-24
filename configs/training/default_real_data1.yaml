@@ -1,9 +1,9 @@
-num_epochs: 25
+num_epochs: 30
 device: "cuda"          # o "cpu" según tu entorno
 loss_name: "mse"
 grad_clip_norm: 1.0
 log_every_n_steps: 50
-early_stopping_patience: 8
+early_stopping_patience: 10
 early_stopping_min_delta: 0.00005
 restore_best_weights: true
 use_amp: true
@@ -31,5 +31,5 @@ optimizer:
   scheduler_name: "cosine_warmup"
   scheduler_step_size: 10
   scheduler_gamma: 0.1
-  scheduler_T_max: 25
-  warmup_epochs: 1
+  scheduler_T_max: 30
+  warmup_epochs: 2

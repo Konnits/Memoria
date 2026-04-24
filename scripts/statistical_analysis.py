@@ -13,6 +13,21 @@ from typing import Dict, List, Tuple, Optional
 from scipy import stats
 
 
+def trimmed_mean(values: np.ndarray, proportion_to_cut: float = 0.1) -> float:
+    """
+    Calcula media recortada eliminando una fracción en ambos extremos.
+    """
+    vals = np.asarray(values, dtype=float)
+    if vals.size == 0:
+        return float("nan")
+
+    vals = np.sort(vals)
+    k = int(np.floor(vals.size * proportion_to_cut))
+    if vals.size - 2 * k <= 0:
+        return float(vals.mean())
+    return float(vals[k : vals.size - k].mean())
+
+
 def wilcoxon_signed_rank(
     metric_a: np.ndarray,
     metric_b: np.ndarray,
@@ -154,8 +169,12 @@ def generate_summary_table(
     seed_col: str = "Seed",
 ) -> pd.DataFrame:
     """
-    Genera tabla resumen con media ± std por modelo, promediando primero por
-    dataset (y semillas si hay múltiples).
+    Genera tabla resumen por modelo sobre promedios por dataset.
+
+    Incluye métricas clásicas (media ± std) y robustas:
+    - mediana
+    - IQR
+    - media recortada (trimmed mean, 10%)
 
     Returns
     -------
@@ -170,10 +189,34 @@ def generate_summary_table(
     for model_name, grp in agg.groupby(model_col):
         row = {"Modelo": model_name}
         for m in metrics:
-            vals = grp[m].values
+            vals = grp[m].dropna().values
+            if vals.size == 0:
+                row[f"{m}_mean"] = float("nan")
+                row[f"{m}_std"] = float("nan")
+                row[f"{m}_median"] = float("nan")
+                row[f"{m}_q1"] = float("nan")
+                row[f"{m}_q3"] = float("nan")
+                row[f"{m}_iqr"] = float("nan")
+                row[f"{m}_trimmed_mean"] = float("nan")
+                row[f"{m}"] = "nan ± nan"
+                row[f"{m}_robust"] = "nan [IQR=nan]"
+                continue
+
+            q1 = float(np.percentile(vals, 25))
+            q3 = float(np.percentile(vals, 75))
+            med = float(np.median(vals))
+            iqr = float(q3 - q1)
+            tmean = trimmed_mean(vals, proportion_to_cut=0.1)
+
             row[f"{m}_mean"] = round(float(vals.mean()), 6)
             row[f"{m}_std"] = round(float(vals.std()), 6)
+            row[f"{m}_median"] = round(med, 6)
+            row[f"{m}_q1"] = round(q1, 6)
+            row[f"{m}_q3"] = round(q3, 6)
+            row[f"{m}_iqr"] = round(iqr, 6)
+            row[f"{m}_trimmed_mean"] = round(float(tmean), 6)
             row[f"{m}"] = f"{vals.mean():.4f} ± {vals.std():.4f}"
+            row[f"{m}_robust"] = f"{med:.4f} [IQR={iqr:.4f}]"
         rows.append(row)
 
     return pd.DataFrame(rows)
@@ -198,7 +241,7 @@ def generate_full_report(
 
     # Tabla resumen
     summary = generate_summary_table(df, metrics, model_col, dataset_col, seed_col)
-    lines.append("RESUMEN POR MODELO (media ± std sobre datasets):")
+    lines.append("RESUMEN POR MODELO (media ± std y robustez sobre datasets):")
     lines.append(summary.to_string(index=False))
     lines.append("")
 

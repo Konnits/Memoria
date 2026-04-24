@@ -2,6 +2,43 @@ import os
 import pandas as pd
 import numpy as np
 
+
+def trimmed_mean(values: np.ndarray, proportion_to_cut: float = 0.1) -> float:
+    vals = np.asarray(values, dtype=float)
+    if vals.size == 0:
+        return float("nan")
+    vals = np.sort(vals)
+    k = int(np.floor(vals.size * proportion_to_cut))
+    if vals.size - 2 * k <= 0:
+        return float(vals.mean())
+    return float(vals[k : vals.size - k].mean())
+
+
+def summarize_metric(values: pd.Series) -> dict:
+    arr = values.dropna().to_numpy(dtype=float)
+    if arr.size == 0:
+        return {
+            "mean": np.nan,
+            "std": np.nan,
+            "median": np.nan,
+            "q1": np.nan,
+            "q3": np.nan,
+            "iqr": np.nan,
+            "trimmed_mean": np.nan,
+        }
+
+    q1 = float(np.percentile(arr, 25))
+    q3 = float(np.percentile(arr, 75))
+    return {
+        "mean": float(arr.mean()),
+        "std": float(arr.std()),
+        "median": float(np.median(arr)),
+        "q1": q1,
+        "q3": q3,
+        "iqr": float(q3 - q1),
+        "trimmed_mean": float(trimmed_mean(arr, 0.1)),
+    }
+
 def main():
     csv_path = "experiments/benchmark_final/benchmark_final.csv"
     if not os.path.exists(csv_path):
@@ -24,12 +61,21 @@ def main():
         
     seed_avg = df.groupby(["Dataset_ID", "Modelo"])[metrics].mean().reset_index()
 
-    # 2. Calcular la media y desviación estándar para cada modelo a través de todos datasets
-    summary_stats = seed_avg.groupby("Modelo")[metrics].agg(['mean', 'std'])
-    
-    # Aplanar el MultiIndex de columnas
-    summary_stats.columns = [f"{metric}_{stat}" for metric, stat in summary_stats.columns]
-    summary_stats = summary_stats.reset_index()
+    # 2. Calcular estadísticas por modelo sobre datasets (robustas + clásicas)
+    rows = []
+    for model_name, grp in seed_avg.groupby("Modelo"):
+        row = {"Modelo": model_name}
+        for metric in metrics:
+            s = summarize_metric(grp[metric])
+            row[f"{metric}_mean"] = s["mean"]
+            row[f"{metric}_std"] = s["std"]
+            row[f"{metric}_median"] = s["median"]
+            row[f"{metric}_q1"] = s["q1"]
+            row[f"{metric}_q3"] = s["q3"]
+            row[f"{metric}_iqr"] = s["iqr"]
+            row[f"{metric}_trimmed_mean"] = s["trimmed_mean"]
+        rows.append(row)
+    summary_stats = pd.DataFrame(rows)
 
     # 3. Calcular "Victorias por dataset"
     # "se cuenta en cuántos de los 17 datasets cada modelo obtiene el menor error"
@@ -43,8 +89,12 @@ def main():
     final_df = pd.merge(summary_stats, wins_counts, on="Modelo", how="left")
     final_df["Victorias (MSE)"] = final_df["Victorias (MSE)"].fillna(0).astype(int)
 
-    # 4. Ordenar desde el MEJOR (menor error medio MSE) al PEOR
-    final_df = final_df.sort_values(by="test_mse_mean", ascending=True).reset_index(drop=True)
+    # 4. Ordenar desde el MEJOR al PEOR por criterio robusto (trimmed mean),
+    # con desempate por mediana de MSE.
+    final_df = final_df.sort_values(
+        by=["test_mse_trimmed_mean", "test_mse_median"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
 
     # 5. Formatear output para mostrar en consola de manera limpia y clara para la tesis
     print("=" * 110)
@@ -52,21 +102,26 @@ def main():
     print("=" * 110)
     print("Metodología Aplicada (alineada con cap6_experimentos.tex):")
     print(" 1. Los resultados de las semillas se promedian a nivel de dataset para estabilizar la varianza interna.")
-    print(" 2. Se reporta la Media ± Desviación Estándar inter-datasets para cuantificar desempeño y dispersión global.")
+    print(" 2. Se reportan estadísticas clásicas (mean±std) y robustas (mediana + IQR, trimmed mean 10%).")
     print(" 3. 'Victorias': Número de datasets en los que el modelo logró el MSE promedio MÁS BAJO frente al resto.")
-    print(" 4. Ranking general descendente: Ordenados jerárquicamente por el menor MSE Medio.")
+    print(" 4. Ranking robusto: ordenado por menor MSE trimmed mean (10%), con desempate por mediana.")
     print("-" * 110)
     
     # Crear un DataFrame formateado para impresión bonita
     print_df = pd.DataFrame()
     print_df["Rank"] = range(1, len(final_df) + 1)
     print_df["Modelo"] = final_df["Modelo"]
+    print_df["MSE TrimmedMean(10%)"] = final_df["test_mse_trimmed_mean"].map(lambda x: f"{x:.4f}")
     
     for metric in metrics:
         clean_name = metric.replace("test_", "").upper()
-        # Formato: Media ± STD
+        # Formato clásico y robusto
         print_df[f"{clean_name} (Mean ± std)"] = final_df.apply(
             lambda row: f"{row[f'{metric}_mean']:.4f} ± {row[f'{metric}_std']:.4f}", axis=1
+        )
+        print_df[f"{clean_name} (Median [IQR])"] = final_df.apply(
+            lambda row: f"{row[f'{metric}_median']:.4f} [{row[f'{metric}_q1']:.4f}, {row[f'{metric}_q3']:.4f}]",
+            axis=1,
         )
         
     print_df["Victorias"] = final_df["Victorias (MSE)"]

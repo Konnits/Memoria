@@ -95,6 +95,7 @@ class TimePositionalEncoding(nn.Module):
         d_model: int,
         time_scale: float = 1.0,
         mode: Literal["sinusoidal", "mlp", "time2vec"] = "sinusoidal",
+        time_transform: Literal["linear", "log1p"] = "log1p",
         mlp_hidden_dim: int = 64,
     ) -> None:
         """
@@ -111,6 +112,11 @@ class TimePositionalEncoding(nn.Module):
             "sinusoidal": encoding sinusoidal continuo (fijo).
             "mlp": encoding aprendido mediante un MLP sobre τ.
             "time2vec": encoding Time2Vec con componentes aprendidos.
+        time_transform:
+            Transformación previa aplicada a τ = (t - t0) / time_scale.
+            "linear": usa τ sin modificar.
+            "log1p": usa log1p(clamp(τ, min=0)), más robusto cuando hay
+            horizontes o escalas temporales largas.
         mlp_hidden_dim:
             Dimensión oculta en el caso "mlp".
         """
@@ -119,9 +125,13 @@ class TimePositionalEncoding(nn.Module):
         self.d_model = d_model
         self.time_scale = float(time_scale)
         self.mode = mode
+        self.time_transform = time_transform
 
         if self.time_scale <= 0.0:
             raise ValueError("time_scale debe ser > 0.")
+
+        if self.time_transform not in {"linear", "log1p"}:
+            raise ValueError("time_transform debe ser 'linear' o 'log1p'.")
 
         if mode == "mlp":
             self.mlp = nn.Sequential(
@@ -171,6 +181,9 @@ class TimePositionalEncoding(nn.Module):
         t0 = timestamps[:, :1]
         # τ = (t - t0) / time_scale
         tau = (timestamps - t0) / self.time_scale  # [B, L]
+
+        if self.time_transform == "log1p":
+            tau = torch.log1p(torch.clamp(tau, min=0.0))
 
         if self.mode == "sinusoidal":
             # tau: [B, L] -> [B, L, 1]

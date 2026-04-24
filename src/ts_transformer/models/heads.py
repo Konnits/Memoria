@@ -58,3 +58,51 @@ class RegressionHead(nn.Module):
             Tensor de salida, shape [..., output_dim].
         """
         return self.net(x)
+
+
+class AttentionPooling(nn.Module):
+    """
+    Pooling atencional sobre la secuencia para obtener un vector global.
+
+    Esta capa aprende pesos por token y permite fusionar contexto global con
+    el estado del token target en tareas de forecasting.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        hidden_dim: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        h = hidden_dim if hidden_dim is not None else max(32, d_model // 2)
+        self.proj = nn.Linear(d_model, h)
+        self.score = nn.Linear(h, 1, bias=False)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        valid_mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Parameters
+        ----------
+        x:
+            Tensor [B, L, d_model].
+        valid_mask:
+            Máscara bool opcional [B, L] con True en posiciones válidas.
+
+        Returns
+        -------
+        pooled:
+            Tensor [B, d_model] con el resumen global.
+        alpha:
+            Tensor [B, L] con pesos de atención.
+        """
+        scores = self.score(torch.tanh(self.proj(x))).squeeze(-1)  # [B, L]
+
+        if valid_mask is not None:
+            scores = scores.masked_fill(~valid_mask, float("-1e4"))
+
+        alpha = torch.softmax(scores, dim=-1)
+        pooled = torch.sum(alpha.unsqueeze(-1) * x, dim=1)
+        return pooled, alpha

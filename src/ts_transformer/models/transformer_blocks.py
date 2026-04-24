@@ -75,21 +75,20 @@ class TransformerEncoderBlock(nn.Module):
         out:
             Tensor de salida, shape [B, L, d_model].
         """
-        # Self-attention con residual y norm
+        # Pre-LN: normalizar antes de cada sub-capa para mejorar estabilidad.
+        x_norm = self.norm1(x)
         attn_output, _ = self.self_attn(
-            x,
+            x_norm,
             key_padding_mask=key_padding_mask,
             attn_mask=attn_mask,
             temporal_bias=temporal_bias,
             is_causal=is_causal,
         )
         x = x + self.dropout(attn_output)
-        x = self.norm1(x)
 
-        # Feed-forward con residual y norm
-        ff = self.linear2(self.dropout_ff(self.activation(self.linear1(x))))
+        x_norm = self.norm2(x)
+        ff = self.linear2(self.dropout_ff(self.activation(self.linear1(x_norm))))
         x = x + self.dropout(ff)
-        x = self.norm2(x)
 
         return x
 

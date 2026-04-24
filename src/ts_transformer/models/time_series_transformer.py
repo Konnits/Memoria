@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from .transformer_blocks import TransformerEncoder
-from .heads import RegressionHead
+from .heads import RegressionHead, AttentionPooling
 
 # Importamos los módulos de embeddings/encodings de tiempo y valores.
 # Se asume que existen en ts_transformer.features con las firmas:
@@ -39,10 +39,12 @@ class TimeSeriesTransformerConfig:
     dropout: float = 0.1
     activation: str = "relu"
     time_scale: float = 900.0  # p.ej. 900 segundos = 15 minutos
+    time_transform: str = "log1p"  # "linear" | "log1p"
     use_causal_mask: bool = False  # para experimentos autoregresivos (opcional)
     use_sensor_embedding: bool = False
     num_sensors: int = 0
     time_encoding_mode: str = "sinusoidal"  # "sinusoidal" | "mlp" | "time2vec"
+    readout_mode: str = "target_token"  # "target_token" | "target_plus_attention_pool"
     use_temporal_attn_bias: bool = False
     use_target_flag_embedding: bool = True
     validate_inputs: bool = True
@@ -82,6 +84,7 @@ class TimeSeriesTransformer(nn.Module):
         self.value_embedding = FeatureEmbedding(
             d_in=self.input_dim,
             d_model=self.d_model,
+            use_layernorm=True,
         )
 
         # Encoding posicional temporal continuo
@@ -89,7 +92,14 @@ class TimeSeriesTransformer(nn.Module):
             d_model=self.d_model,
             time_scale=config.time_scale,
             mode=config.time_encoding_mode,
+            time_transform=config.time_transform,
         )
+
+        # Escalas aprendibles para balancear cada componente de embedding.
+        self.time_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.flag_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.sensor_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.input_norm = nn.LayerNorm(self.d_model)
 
         # Embedding para distinguir tokens de historia vs token target
         self.use_target_flag_embedding = bool(config.use_target_flag_embedding)
@@ -138,6 +148,24 @@ class TimeSeriesTransformer(nn.Module):
         )
         # Head auxiliar para modo multi-target-token (K tokens target -> K salidas escalares).
         self.per_target_head = nn.Linear(self.d_model, 1)
+
+        self.readout_mode = str(config.readout_mode)
+        if self.readout_mode not in {"target_token", "target_plus_attention_pool"}:
+            raise ValueError(
+                "readout_mode debe ser 'target_token' o 'target_plus_attention_pool'."
+            )
+
+        if self.readout_mode == "target_plus_attention_pool":
+            self.history_pool = AttentionPooling(d_model=self.d_model)
+            self.readout_fusion = nn.Sequential(
+                nn.Linear(2 * self.d_model, self.d_model),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(self.d_model, self.d_model),
+            )
+        else:
+            self.history_pool = None
+            self.readout_fusion = None
 
     def forward(
         self,
@@ -228,14 +256,14 @@ class TimeSeriesTransformer(nn.Module):
         # Embeddings de valores y tiempo
         value_emb = self.value_embedding(input_values)         # [B, L, d_model]
         time_emb = self.time_encoding(input_timestamps).to(value_emb.dtype) # [B, L, d_model]
-        x = value_emb + time_emb                               # [B, L, d_model]
+        x = value_emb + self.time_emb_scale.to(value_emb.dtype) * time_emb
 
         # Embedding de flag opcional (historia/target)
         if self.use_target_flag_embedding:
             if self.flag_embedding is None:
                 raise RuntimeError("use_target_flag_embedding=True pero flag_embedding no está inicializado.")
             flag_emb = self.flag_embedding(is_target_mask).to(value_emb.dtype)  # [B, L, d_model]
-            x = x + flag_emb
+            x = x + self.flag_emb_scale.to(value_emb.dtype) * flag_emb
 
         if self.use_sensor_embedding:
             if input_sensor_ids is None:
@@ -248,7 +276,9 @@ class TimeSeriesTransformer(nn.Module):
                     f"pero se obtuvo {tuple(input_sensor_ids.shape)}."
                 )
             sensor_emb = self.sensor_embedding(input_sensor_ids.to(torch.long))
-            x = x + sensor_emb
+            x = x + self.sensor_emb_scale.to(value_emb.dtype) * sensor_emb
+
+        x = self.input_norm(x)
 
         # Máscara causal opcional delegada por flag booleano
         is_causal = False
@@ -292,11 +322,25 @@ class TimeSeriesTransformer(nn.Module):
                 "Error: is_target_mask indica que los targets no están estrictamente al final."
         target_states = encoder_output[:, -num_target_tokens:, :]
 
+        readout_states = target_states
+        if self.readout_mode == "target_plus_attention_pool":
+            if self.history_pool is None or self.readout_fusion is None:
+                raise RuntimeError("readout_mode='target_plus_attention_pool' requiere módulos de pooling/fusión inicializados.")
+
+            hist_valid_mask = ~is_target_mask
+            if padding_mask is not None:
+                hist_valid_mask = hist_valid_mask & (~padding_mask)
+
+            pooled_history, _ = self.history_pool(encoder_output, valid_mask=hist_valid_mask)
+            pooled_history = pooled_history.unsqueeze(1).expand(-1, num_target_tokens, -1)
+            fused = torch.cat([target_states, pooled_history], dim=-1)
+            readout_states = self.readout_fusion(fused)
+
         # Cabeza de regresión
         if self.use_sensor_embedding:
             # Event mode: cada token corresponde a un sensor a predecir.
             # Salida escalar por token [B, K_total, 1] -> [B, K_total]
-            preds_flat = self.per_target_head(target_states).squeeze(-1)
+            preds_flat = self.per_target_head(readout_states).squeeze(-1)
             # Reconstruir [B, M, output_dim]. Asumimos que K_total = M * output_dim
             if num_target_tokens % self.output_dim != 0:
                 raise ValueError(f"num_target_tokens={num_target_tokens} no es divisible por output_dim={self.output_dim}")
@@ -305,7 +349,7 @@ class TimeSeriesTransformer(nn.Module):
         else:
             # Dense mode: cada token futuro (M tokens) predice todas las variables.
             # head produce [B, M, output_dim] directamente (pues num_target_tokens == M)
-            preds = self.head(target_states)
+            preds = self.head(readout_states)
 
         # Retornar a compatibilidad con código univariado en tiempo
         if preds.shape[1] == 1:
@@ -317,6 +361,7 @@ class TimeSeriesTransformer(nn.Module):
         out: Dict[str, Any] = {
             "preds": preds,
             "target_states": target_states,
+            "readout_states": readout_states,
             "encoder_output": encoder_output,
         }
         if all_layers is not None:
