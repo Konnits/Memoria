@@ -18,7 +18,7 @@ from .heads import RegressionHead, AttentionPooling
 #   TargetFlagEmbedding(d_model: int)
 #       forward(is_target_mask: [B, L]) -> [B, L, d_model]
 from ..features.value_embedding import FeatureEmbedding
-from ..features.time_encoding import TimePositionalEncoding
+from ..features.time_encoding import TimePositionalEncoding, compute_relative_time_deltas
 from ..features.target_flag_embedding import TargetFlagEmbedding
 from ..features.sensor_embedding import SensorEmbedding
 from ..features.temporal_attention_bias import TemporalAttentionBias
@@ -48,6 +48,7 @@ class TimeSeriesTransformerConfig:
     use_temporal_attn_bias: bool = False
     use_target_flag_embedding: bool = True
     validate_inputs: bool = True
+    decoder_num_layers: Optional[int] = None
 
 
 class TimeSeriesTransformer(nn.Module):
@@ -174,6 +175,7 @@ class TimeSeriesTransformer(nn.Module):
         is_target_mask: torch.Tensor,
         input_sensor_ids: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
         attn_mask: Optional[torch.Tensor] = None,
         return_dict: bool = False,
         return_all_layers: bool = False,
@@ -255,7 +257,11 @@ class TimeSeriesTransformer(nn.Module):
 
         # Embeddings de valores y tiempo
         value_emb = self.value_embedding(input_values)         # [B, L, d_model]
-        time_emb = self.time_encoding(input_timestamps).to(value_emb.dtype) # [B, L, d_model]
+        time_emb = self.time_encoding(
+            input_timestamps,
+            padding_mask=padding_mask,
+            lengths=lengths,
+        ).to(value_emb.dtype) # [B, L, d_model]
         x = value_emb + self.time_emb_scale.to(value_emb.dtype) * time_emb
 
         # Embedding de flag opcional (historia/target)
@@ -289,8 +295,13 @@ class TimeSeriesTransformer(nn.Module):
         temporal_bias = None
         if self.use_temporal_attn_bias and self.temporal_attn_bias is not None:
             # Usar timestamps normalizados para el bias
-            t0 = input_timestamps[:, :1]
-            tau = (input_timestamps - t0) / self.config.time_scale
+            tau = compute_relative_time_deltas(
+                input_timestamps,
+                time_scale=self.config.time_scale,
+                padding_mask=padding_mask,
+                lengths=lengths,
+                time_transform="linear",
+            )
             temporal_bias = self.temporal_attn_bias(tau)
 
         # Encoder Transformer

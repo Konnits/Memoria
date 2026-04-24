@@ -49,7 +49,14 @@ def build_models(model_cfg, use_events, model_input_dim, input_dim, output_dim):
     s_base = STraTSNetwork(num_features=input_dim + 1, d_model=d_model, num_classes=output_dim)
     strats = MultiHorizonBaselineWrapper(s_base, "strats", d_model, output_dim, use_sensor_embedding=use_events)
     
-    c_base = CompatibleTransformer(num_variates=input_dim if use_events else 1, d_model=d_model, num_classes=output_dim)
+    c_base = CompatibleTransformer(
+        num_variates=input_dim if use_events else 1,
+        d_model=d_model,
+        n_heads=model_cfg.num_heads,
+        n_layers=model_cfg.num_layers,
+        dropout=model_cfg.dropout,
+        num_classes=output_dim,
+    )
     coform = MultiHorizonBaselineWrapper(c_base, "coformer", d_model, output_dim, use_sensor_embedding=use_events)
     
     return {"Custom": custom, "STraTS_Adapter": strats, "CoFormer_Adapter": coform}

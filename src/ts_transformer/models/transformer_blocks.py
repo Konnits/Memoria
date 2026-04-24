@@ -252,30 +252,28 @@ class TransformerDecoderBlock(nn.Module):
         cross_attn_mask:
             Máscara de atención para cross-attention.
         """
-        # Self-attention
+        # Pre-LN: mantiene el decoder estable cuando se entrena con varios targets.
+        x_norm = self.norm1(x)
         attn_output, _ = self.self_attn(
-            x,
+            x_norm,
             key_padding_mask=tgt_key_padding_mask,
             attn_mask=tgt_attn_mask,
             is_causal=is_causal,
         )
         x = x + self.dropout(attn_output)
-        x = self.norm1(x)
 
-        # Cross-attention
+        x_norm = self.norm2(x)
         cross_output, _ = self.cross_attn(
-            query=x,
+            query=x_norm,
             key_value=encoder_out,
             key_padding_mask=memory_key_padding_mask,
             attn_mask=cross_attn_mask,
         )
         x = x + self.dropout(cross_output)
-        x = self.norm2(x)
 
-        # Feed-forward
-        ff = self.linear2(self.dropout_ff(self.activation(self.linear1(x))))
+        x_norm = self.norm3(x)
+        ff = self.linear2(self.dropout_ff(self.activation(self.linear1(x_norm))))
         x = x + self.dropout(ff)
-        x = self.norm3(x)
 
         return x
 

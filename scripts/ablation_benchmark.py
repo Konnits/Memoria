@@ -111,7 +111,20 @@ def main():
         models = {
             "Custom": TimeSeriesTransformer(copy.deepcopy(model_cfg_base)),
             "STraTS_Adapter": MultiHorizonBaselineWrapper(STraTSNetwork(num_features=input_dim + 1, d_model=d_model, num_classes=output_dim), "strats", d_model, output_dim, use_sensor_embedding=data_cfg.use_event_tokens),
-            "CoFormer_Adapter": MultiHorizonBaselineWrapper(CompatibleTransformer(num_variates=input_dim if data_cfg.use_event_tokens else 1, d_model=d_model, num_classes=output_dim), "coformer", d_model, output_dim, use_sensor_embedding=data_cfg.use_event_tokens)
+            "CoFormer_Adapter": MultiHorizonBaselineWrapper(
+                CompatibleTransformer(
+                    num_variates=input_dim if data_cfg.use_event_tokens else 1,
+                    d_model=d_model,
+                    n_heads=model_cfg_base.num_heads,
+                    n_layers=model_cfg_base.num_layers,
+                    dropout=model_cfg_base.dropout,
+                    num_classes=output_dim,
+                ),
+                "coformer",
+                d_model,
+                output_dim,
+                use_sensor_embedding=data_cfg.use_event_tokens,
+            )
         }
         
         for name, model in models.items():

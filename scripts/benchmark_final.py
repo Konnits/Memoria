@@ -4,9 +4,10 @@ benchmark_final.py — Benchmark integral para la tesis.
 Ejecuta de forma resumible:
   1. Todos los 17 datasets reales.
   2. Múltiples semillas por dataset (default: 3).
-  3. Modelos: Custom, STraTS_Adapter, Persistence, Linear,
+  3. Modelos: Custom, STraTS_Adapter, CoFormer-Uni/CoFormer_Adapter,
+              Persistence, Linear,
               NoTimeEncoding (ablación), NoTargetToken (ablación).
-              (CoFormer está comentado, listo para activar)
+              EncDec-Opt es opcional con --include-encdec.
   4. Evaluación en SPLIT DE TEST real (separado de validación).
   5. Medición de costo (tiempo de entrenamiento, nº de parámetros).
   6. Análisis estadístico al final (Wilcoxon, bootstrap, tablas resumen).
@@ -16,6 +17,8 @@ Uso:
   python scripts/benchmark_final.py --start-dataset 7 --end-dataset 17
   python scripts/benchmark_final.py --seeds 42 84 126
   python scripts/benchmark_final.py --skip-ablation   (sólo modelos principales)
+  python scripts/benchmark_final.py --include-encdec --encdec-num-targets 8
+  python scripts/benchmark_final.py --include-encdec --enable-encdec-finetuning --encdec-ft-modes Mixed
 
 Se puede detener con Ctrl+C y reanudar ejecutando el mismo comando.
 El progreso se guarda en el CSV después de cada modelo entrenado.
@@ -50,7 +53,7 @@ from ts_transformer.utils import (
 )
 
 from state_art.strats.model import STraTSNetwork
-# from state_art.coformer.model import CompatibleTransformer
+from state_art.coformer.model import CompatibleTransformer
 from state_art.baselines_wrapper import MultiHorizonBaselineWrapper
 from state_art.simple_baselines import (
     PersistenceModel, LinearBaselineModel,
@@ -86,9 +89,21 @@ def parse_args():
     p.add_argument("--seeds", type=int, nargs="+", default=[42, 84, 126],
                    help="Lista de semillas aleatorias (default: 42 84 126)")
     p.add_argument("--skip-ablation", action="store_true",
-                   help="Si se activa, sólo entrena Custom, STraTS, Persistence, Linear")
+                   help="Si se activa, omite NoTimeEncoding y NoTargetToken")
     p.add_argument("--skip-baselines", action="store_true",
-                   help="Si se activa, sólo entrena Custom y STraTS")
+                   help="Si se activa, omite sólo los baselines simples Persistence y Linear")
+    p.add_argument("--include-encdec", action="store_true",
+                   help="Incluye variantes optimizadas Encoder-Decoder")
+    p.add_argument("--encdec-num-targets", type=int, default=0,
+                   help="Targets de entrenamiento para EncDec-Opt; 0 usa el valor base del data config")
+    p.add_argument("--enable-encdec-finetuning", action="store_true",
+                   help="Activa fine-tuning autoregresivo para variantes EncDec")
+    p.add_argument("--encdec-ft-modes", type=str, nargs="+",
+                   choices=["Contiguous", "Random", "Mixed"],
+                   default=["Mixed"],
+                   help="Modos AR a ejecutar cuando --enable-encdec-finetuning está activo")
+    p.add_argument("--encdec-ft-num-targets", type=int, default=0,
+                   help="Targets para fine-tuning AR; 0 usa los targets de entrenamiento de EncDec")
     p.add_argument("--models", type=str, nargs="+", default=None,
                    help="Lista opcional de modelos a ejecutar (filtra después de construirlos)")
     p.add_argument("--exp-dir", type=str, default="experiments/benchmark_final",
@@ -232,9 +247,34 @@ def select_training_config(
         chosen = copy.deepcopy(cfg_default)
         tier = "default"
 
-    # Custom (familia mediana) usa regularización algo más fuerte.
-    # Evita tocar Small/Large para mantener comparativas limpias.
+    # Custom (familia mediana) es el más propenso a inestabilidad con el
+    # tier default: historia/offsets variables + MSE + lr=1e-3 puede hacerlo
+    # divergir tras el warmup. Lo mantenemos en su tier por comparabilidad,
+    # pero usamos una receta más suave.
     if model_name.startswith("Custom") and ("Small" not in model_name and "Large" not in model_name):
+        chosen.loss_name = "huber"
+        chosen.grad_clip_norm = min(float(chosen.grad_clip_norm), 0.5)
+        chosen.optimizer_config.lr = min(float(chosen.optimizer_config.lr), 3e-4)
+        chosen.optimizer_config.warmup_epochs = max(
+            int(chosen.optimizer_config.warmup_epochs),
+            5,
+        )
+        chosen.optimizer_config.weight_decay = max(
+            float(chosen.optimizer_config.weight_decay),
+            0.003,
+        )
+
+    if model_name.startswith("EncDec-Opt"):
+        chosen.loss_name = "huber"
+        chosen.grad_clip_norm = (
+            0.5 if float(chosen.grad_clip_norm) <= 0.0
+            else min(float(chosen.grad_clip_norm), 0.5)
+        )
+        chosen.optimizer_config.lr = min(float(chosen.optimizer_config.lr), 3e-4)
+        chosen.optimizer_config.warmup_epochs = max(
+            int(chosen.optimizer_config.warmup_epochs),
+            5,
+        )
         chosen.optimizer_config.weight_decay = max(
             float(chosen.optimizer_config.weight_decay),
             0.003,
@@ -261,6 +301,8 @@ def build_models(
     output_dim: int,
     skip_ablation: bool = False,
     skip_baselines: bool = False,
+    include_encdec: bool = False,
+    encdec_num_targets: int | None = None,
 ):
     """
     Construye todos los modelos a evaluar.
@@ -292,11 +334,11 @@ def build_models(
 
     # Nota: modelos Large desactivados temporalmente para priorizar tiempo de cómputo.
     # Para reactivarlos, descomentar este bloque y las líneas de instanciación más abajo.
-    # cfg_large = load_model_config("configs/model/transformer_large.yaml")
-    # cfg_large.input_dim = model_input_dim
-    # cfg_large.output_dim = output_dim
-    # cfg_large.use_sensor_embedding = bool(use_events)
-    # cfg_large.num_sensors = input_dim if use_events else 0
+    cfg_large = load_model_config("configs/model/transformer_large.yaml")
+    cfg_large.input_dim = model_input_dim
+    cfg_large.output_dim = output_dim
+    cfg_large.use_sensor_embedding = bool(use_events)
+    cfg_large.num_sensors = input_dim if use_events else 0
 
     # --- Modelo propuesto ---
     models["Custom-Small"] = TimeSeriesTransformer(copy.deepcopy(cfg_small))
@@ -323,16 +365,29 @@ def build_models(
         )
     )
     trainable["Custom-AttnPool"] = True
-    # models["Custom-Large"] = TimeSeriesTransformer(copy.deepcopy(cfg_large))
-    # trainable["Custom-Large"] = True
+    models["Custom-Large"] = TimeSeriesTransformer(copy.deepcopy(cfg_large))
+    trainable["Custom-Large"] = True
 
-    # --- Variante Encoder-Decoder (descartada) ---
-    # models["EncDec-Small"] = TimeSeriesEncoderDecoder(copy.deepcopy(cfg_small))
-    # trainable["EncDec-Small"] = True
-    # models["EncDec"] = TimeSeriesEncoderDecoder(copy.deepcopy(model_cfg))
-    # trainable["EncDec"] = True
-    # models["EncDec-Large"] = TimeSeriesEncoderDecoder(copy.deepcopy(cfg_large))
-    # trainable["EncDec-Large"] = True
+    # --- Variante Encoder-Decoder optimizada ---
+    def _make_encdec_config(base_cfg, *, decoder_num_layers: int = 1):
+        cfg = copy.deepcopy(base_cfg)
+        cfg.decoder_num_layers = int(decoder_num_layers)
+        return cfg
+
+    if include_encdec:
+        mt_suffix = (
+            f"-MT{int(encdec_num_targets)}"
+            if encdec_num_targets is not None and int(encdec_num_targets) > 0
+            else ""
+        )
+        models[f"EncDec-Opt-Small{mt_suffix}"] = TimeSeriesEncoderDecoder(
+            _make_encdec_config(cfg_small, decoder_num_layers=1)
+        )
+        trainable[f"EncDec-Opt-Small{mt_suffix}"] = True
+        models[f"EncDec-Opt{mt_suffix}"] = TimeSeriesEncoderDecoder(
+            _make_encdec_config(model_cfg, decoder_num_layers=1)
+        )
+        trainable[f"EncDec-Opt{mt_suffix}"] = True
 
     # --- Variantes temporales aprendidas ---
     # Separar encoding temporal y sesgo de atención evita confundir qué mejora
@@ -342,11 +397,14 @@ def build_models(
         *,
         time_encoding_mode: str,
         use_temporal_attn_bias: bool,
+        time_transform: str | None = None,
     ):
         """Crea una copia del config con la variante temporal solicitada."""
         cfg = copy.deepcopy(base_cfg)
         cfg.time_encoding_mode = time_encoding_mode
         cfg.use_temporal_attn_bias = use_temporal_attn_bias
+        if time_transform is not None:
+            cfg.time_transform = time_transform
         return cfg
 
     models["Custom-Time2Vec-Small"] = TimeSeriesTransformer(
@@ -354,6 +412,7 @@ def build_models(
             cfg_small,
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=False,
+            time_transform="linear",
         )
     )
     trainable["Custom-Time2Vec-Small"] = True
@@ -362,6 +421,7 @@ def build_models(
             model_cfg,
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=False,
+            time_transform="linear",
         )
     )
     trainable["Custom-Time2Vec"] = True
@@ -388,6 +448,7 @@ def build_models(
             cfg_small,
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=True,
+            time_transform="linear",
         )
     )
     trainable["Custom-Time2VecBias-Small"] = True
@@ -396,6 +457,7 @@ def build_models(
             model_cfg,
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=True,
+            time_transform="linear",
         )
     )
     trainable["Custom-Time2VecBias"] = True
@@ -414,16 +476,25 @@ def build_models(
     )
     trainable["STraTS_Adapter"] = True
 
-    # --- CoFormer Adapter (comentado, listo para activar) ---
-    # c_base = CompatibleTransformer(
-    #     num_variates=input_dim if use_events else 1,
-    #     d_model=d_model,
-    #     num_classes=output_dim,
-    # )
-    # models["CoFormer_Adapter"] = MultiHorizonBaselineWrapper(
-    #     c_base, "coformer", d_model, output_dim, use_sensor_embedding=use_events
-    # )
-    # trainable["CoFormer_Adapter"] = True
+    # --- CoFormer Adapter ---
+    # En datasets univariados, CompatibleTransformer desactiva la rama
+    # inter-variate y queda como una variante CoFormer-Uni más barata.
+    coformer_num_variates = input_dim if use_events else 1
+    c_base = CompatibleTransformer(
+        num_variates=coformer_num_variates,
+        d_model=d_model,
+        n_heads=model_cfg.num_heads,
+        n_layers=model_cfg.num_layers,
+        dropout=model_cfg.dropout,
+        num_classes=output_dim,
+    )
+    coformer_name = (
+        "CoFormer-Uni" if coformer_num_variates == 1 else "CoFormer_Adapter"
+    )
+    models[coformer_name] = MultiHorizonBaselineWrapper(
+        c_base, "coformer", d_model, output_dim, use_sensor_embedding=use_events
+    )
+    trainable[coformer_name] = True
 
     if not skip_baselines:
         # --- Persistence (no entrena) ---
@@ -541,6 +612,7 @@ def prepare_data(
     logger,
     num_workers_override: int | None = None,
     prefetch_factor: int = 4,
+    num_targets_override: int | None = None,
 ):
     """Carga y prepara un dataset concreto. Retorna loaders y metadatos."""
     target_csv = f"data/processed/real_data_{ds_idx}.csv"
@@ -592,6 +664,12 @@ def prepare_data(
     input_dim = X_train.shape[1]
     output_dim = y_train.shape[1]
 
+    num_targets = (
+        int(num_targets_override)
+        if num_targets_override is not None and int(num_targets_override) > 0
+        else int(base_data_cfg.num_targets)
+    )
+
     ds_cfg = TimeSeriesDatasetConfig(
         history_length=base_data_cfg.history_length,
         target_offset_choices=base_data_cfg.target_offset_choices,
@@ -599,7 +677,7 @@ def prepare_data(
         target_offset_max=base_data_cfg.target_offset_max,
         stride=base_data_cfg.stride,
         min_history_length=base_data_cfg.min_history_length,
-        num_targets=base_data_cfg.num_targets,
+        num_targets=num_targets,
     )
 
     use_events = base_data_cfg.use_event_tokens
@@ -687,6 +765,7 @@ def prepare_data(
         "n_val": len(ds_va),
         "n_test": len(ds_te),
         "adaptive_time_scale": adaptive_time_scale,
+        "num_targets": int(getattr(ds_tr, "k_targets", num_targets)),
     }
 
 
@@ -699,13 +778,15 @@ def main():
     setup_logging()
     logger = get_logger("benchmark_final")
 
+    if args.enable_encdec_finetuning and not args.include_encdec:
+        args.include_encdec = True
+        logger.info("  --enable-encdec-finetuning activa también --include-encdec.")
+
     exp_dir = args.exp_dir
     os.makedirs(exp_dir, exist_ok=True)
     out_csv = os.path.join(exp_dir, "benchmark_final.csv")
 
-    # Fine-tuning AR desactivado temporalmente para priorizar el benchmark base.
-    # Para reactivarlo, cambiar a True.
-    enable_finetuning = False
+    enable_finetuning = bool(args.enable_encdec_finetuning)
 
     logger.info(
         Fore.GREEN
@@ -716,7 +797,15 @@ def main():
     logger.info(f"  Semillas: {args.seeds}")
     logger.info(f"  Ablación: {'NO' if args.skip_ablation else 'SÍ'}")
     logger.info(f"  Baselines simples: {'NO' if args.skip_baselines else 'SÍ'}")
+    logger.info(f"  EncDec optimizado: {'SÍ' if args.include_encdec else 'NO'}")
+    if args.include_encdec:
+        logger.info(
+            "  EncDec train targets: "
+            + ("base data config" if args.encdec_num_targets <= 0 else str(args.encdec_num_targets))
+        )
     logger.info(f"  Fine-tuning AR: {'SÍ' if enable_finetuning else 'NO'}")
+    if enable_finetuning:
+        logger.info(f"  Fine-tuning AR modos: {args.encdec_ft_modes}")
     logger.info(f"  Directorio: {exp_dir}")
     if args.models:
         logger.info(f"  Filtro de modelos: {args.models}")
@@ -796,6 +885,36 @@ def main():
             f"  time_scale adaptativo (train median dt): {data['adaptive_time_scale']:.3f}"
         )
 
+        encdec_data = None
+        encdec_train_targets = int(data["num_targets"])
+        if args.include_encdec and args.encdec_num_targets > int(data["num_targets"]):
+            encdec_train_targets = int(args.encdec_num_targets)
+            logger.info(
+                f"  EncDec-Opt entrenará con {encdec_train_targets} targets "
+                f"y evaluará con {data['num_targets']}."
+            )
+            encdec_data = prepare_data(
+                base_data_cfg,
+                ds_idx,
+                logger,
+                num_workers_override=args.num_workers,
+                prefetch_factor=args.prefetch_factor,
+                num_targets_override=encdec_train_targets,
+            )
+            if encdec_data is None:
+                logger.warning(
+                    Fore.YELLOW
+                    + "  No se pudo preparar data extra para EncDec; se usará la data base."
+                    + Style.RESET_ALL
+                )
+                encdec_data = None
+                encdec_train_targets = int(data["num_targets"])
+            else:
+                encdec_train_targets = int(encdec_data["num_targets"])
+                logger.info(f"  EncDec-Opt targets efectivos de entrenamiento: {encdec_train_targets}")
+                if encdec_train_targets <= int(data["num_targets"]):
+                    encdec_data = None
+
         for seed in args.seeds:
             logger.info(
                 Fore.MAGENTA
@@ -816,12 +935,21 @@ def main():
                 data["output_dim"],
                 skip_ablation=args.skip_ablation,
                 skip_baselines=args.skip_baselines,
+                include_encdec=args.include_encdec,
+                encdec_num_targets=(
+                    encdec_train_targets
+                    if encdec_train_targets > int(data["num_targets"])
+                    else None
+                ),
             )
 
             if args.models:
                 requested_models = set(args.models)
                 available_models = set(models.keys())
-                unknown_models = sorted(requested_models - available_models)
+                available_aliases = available_models | {
+                    name.split("-MT", 1)[0] for name in available_models
+                }
+                unknown_models = sorted(requested_models - available_aliases)
                 if unknown_models:
                     logger.warning(
                         Fore.YELLOW
@@ -831,7 +959,7 @@ def main():
                 models = {
                     name: model
                     for name, model in models.items()
-                    if name in requested_models
+                    if name in requested_models or name.split("-MT", 1)[0] in requested_models
                 }
                 trainable = {
                     name: trainable[name]
@@ -851,7 +979,7 @@ def main():
                 # Check for EncDec fine-tunings completion
                 missing_fts = []
                 if enable_finetuning and "EncDec" in name:
-                    for mode in ["Contiguous", "Random", "Mixed"]:
+                    for mode in args.encdec_ft_modes:
                         if (ds_idx, seed, f"{name}_FT_AR_{mode}") not in completed_runs:
                             missing_fts.append(mode)
 
@@ -871,7 +999,29 @@ def main():
                     ckpt_dir = os.path.join(
                         exp_dir, f"ds_{ds_idx}_seed_{seed}", name
                     )
+                    if (
+                        enable_finetuning
+                        and not requires_base_training
+                        and "EncDec" in name
+                        and missing_fts
+                    ):
+                        ckpt_path = os.path.join(ckpt_dir, "best_model.pt")
+                        if not os.path.exists(ckpt_path):
+                            logger.warning(
+                                Fore.YELLOW
+                                + f"    [RESUME-FT] {name} figura en CSV, pero falta best_model.pt; "
+                                + "se reentrenará la base antes del fine-tuning."
+                                + Style.RESET_ALL
+                            )
+                            requires_base_training = True
+
                     if requires_base_training:
+                        is_encdec_opt = name.startswith("EncDec-Opt")
+                        train_data_for_model = (
+                            encdec_data
+                            if is_encdec_opt and encdec_data is not None
+                            else data
+                        )
                         # Seleccionar config de training según tamaño del modelo
                         effective_cfg = select_training_config(
                             model, training_cfg_small, training_cfg,
@@ -881,7 +1031,7 @@ def main():
                             model=model,
                             model_name=name,
                             needs_training=trainable[name],
-                            train_loader=data["train_loader"],
+                            train_loader=train_data_for_model["train_loader"],
                             val_loader=data["val_loader"],
                             test_loader=data["test_loader"],
                             training_cfg=effective_cfg,
@@ -893,9 +1043,11 @@ def main():
                         record["Dataset_ID"] = ds_idx
                         record["Modelo"] = name
                         record["Seed"] = seed
-                        record["n_train"] = data["n_train"]
+                        record["n_train"] = train_data_for_model["n_train"]
                         record["n_val"] = data["n_val"]
                         record["n_test"] = data["n_test"]
+                        record["train_num_targets"] = int(train_data_for_model["num_targets"])
+                        record["eval_num_targets"] = int(data["num_targets"])
 
                         master_results.append(record)
 
@@ -920,6 +1072,15 @@ def main():
                     # ------ INICIO FINE-TUNING RECURSIVO ------
                     if enable_finetuning and "EncDec" in name and missing_fts:
                         for mode in missing_fts:
+                            ft_num_targets = (
+                                int(args.encdec_ft_num_targets)
+                                if int(args.encdec_ft_num_targets) > 0
+                                else (
+                                    int(encdec_train_targets)
+                                    if name.startswith("EncDec-Opt")
+                                    else int(data["num_targets"])
+                                )
+                            )
                             ft_record_raw = run_ar_finetuning(
                                 mode=mode,
                                 model=model,
@@ -929,7 +1090,10 @@ def main():
                                 training_cfg=training_cfg,
                                 base_ckpt_dir=os.path.join(exp_dir, f"ds_{ds_idx}_seed_{seed}"),
                                 device=device,
-                                logger=logger
+                                logger=logger,
+                                num_targets_override=ft_num_targets,
+                                num_workers_override=args.num_workers,
+                                prefetch_factor=args.prefetch_factor,
                             )
                             if ft_record_raw:
                                 ft_record: dict[str, Any] = dict(ft_record_raw)
@@ -937,9 +1101,11 @@ def main():
                                 ft_record["Dataset_ID"] = ds_idx
                                 ft_record["Modelo"] = f"{name}_FT_AR_{mode}"
                                 ft_record["Seed"] = seed
-                                ft_record["n_train"] = data["n_train"]
-                                ft_record["n_val"] = data["n_val"]
-                                ft_record["n_test"] = data["n_test"]
+                                ft_record["n_train"] = int(ft_record.get("n_train", data["n_train"]))
+                                ft_record["n_val"] = int(ft_record.get("n_val", data["n_val"]))
+                                ft_record["n_test"] = int(ft_record.get("n_test", data["n_test"]))
+                                ft_record["train_num_targets"] = int(ft_record.get("train_num_targets", ft_num_targets))
+                                ft_record["eval_num_targets"] = int(ft_record.get("eval_num_targets", ft_num_targets))
                                 
                                 # Adaptar el prefijo test_ar_
                                 ft_record["test_mse"] = ft_record.pop("test_ar_mse", float("nan"))
@@ -1017,8 +1183,15 @@ def main():
         "Linear",
         "NoTimeEncoding",
         "STraTS_Adapter",
+        "CoFormer-Uni",
+        "CoFormer_Adapter",
+        "EncDec-Opt",
+        "EncDec-Opt-Small",
     ]
     available_models = sorted(df_all["Modelo"].unique().tolist())
+    for model_name in available_models:
+        if model_name.startswith("EncDec-Opt") and model_name not in preferred_models:
+            preferred_models.append(model_name)
     required_models = [m for m in preferred_models if m in available_models]
     if len(required_models) < 2:
         required_models = available_models

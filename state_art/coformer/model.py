@@ -19,11 +19,17 @@ class CompatibleTransformer(nn.Module):
         n_layers: int = 4, 
         dropout: float = 0.1, 
         k_neighbors: int = 30, 
-        num_classes: int = 1
+        num_classes: int = 1,
+        enable_inter_attention: Optional[bool] = None,
     ):
         super().__init__()
         self.num_variates = num_variates
         self.d_model = d_model
+        self.enable_inter_attention = (
+            num_variates > 1
+            if enable_inter_attention is None
+            else bool(enable_inter_attention)
+        )
         
         # 1. Componentes de codificación (Sample-wise Initial feature learning)
         self.me = MeasurementEmbedding(d_model)
@@ -34,7 +40,14 @@ class CompatibleTransformer(nn.Module):
         
         # 2. Capas de Atención Sucesiva (Intra/Inter)
         self.layers = nn.ModuleList([
-            CoFormerAttentionLayer(d_model, n_heads=n_heads, dropout=dropout, k_neighbors=k_neighbors)
+            CoFormerAttentionLayer(
+                d_model,
+                n_heads=n_heads,
+                dropout=dropout,
+                k_neighbors=k_neighbors,
+                enable_inter_attention=self.enable_inter_attention,
+                is_univariate=self.num_variates <= 1,
+            )
             for _ in range(n_layers)
         ])
         
@@ -100,7 +113,11 @@ class CompatibleTransformer(nn.Module):
             if all_masked.any():
                 mha_mask[all_masked, 0] = False
                 
-            attn_out, _ = self.agg_mha(q, k_v, k_v, key_padding_mask=mha_mask)
+            attn_out, _ = self.agg_mha(
+                q, k_v, k_v,
+                key_padding_mask=mha_mask,
+                need_weights=False,
+            )
             f_variates_attended[:, i, :] = attn_out.squeeze(1)
 
         # 4. Global Average Pooling a través de las variables

@@ -338,6 +338,9 @@ class Trainer:
         padding_mask = batch.get("padding_mask", None)
         if padding_mask is not None:
             padding_mask = padding_mask.to(self.device, non_blocking=True)
+        lengths = batch.get("lengths", None)
+        if lengths is not None:
+            lengths = lengths.to(self.device, non_blocking=True)
 
         # Denoising opcional: añade ruido gaussiano sólo en posiciones no-padding.
         # Útil para robustecer la tarea proxy en pretraining.
@@ -356,6 +359,7 @@ class Trainer:
                 is_target_mask=is_target_mask,
                 input_sensor_ids=input_sensor_ids,
                 padding_mask=padding_mask,
+                lengths=lengths,
                 attn_mask=None,
                 return_dict=False,
             )  # [B, D_out]
@@ -466,6 +470,9 @@ class Trainer:
             padding_mask = batch.get("padding_mask", None)
             if padding_mask is not None:
                 padding_mask = padding_mask.to(self.device, non_blocking=True)
+            lengths = batch.get("lengths", None)
+            if lengths is not None:
+                lengths = lengths.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
                 preds = self.model(
@@ -474,6 +481,7 @@ class Trainer:
                     is_target_mask=is_target_mask,
                     input_sensor_ids=input_sensor_ids,
                     padding_mask=padding_mask,
+                    lengths=lengths,
                     attn_mask=None,
                     return_dict=False,
                 )
@@ -534,6 +542,9 @@ class Trainer:
             padding_mask = batch.get("padding_mask", None)
             if padding_mask is not None:
                 padding_mask = padding_mask.to(self.device, non_blocking=True)
+            lengths = batch.get("lengths", None)
+            if lengths is not None:
+                lengths = lengths.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
                 preds = self.model(
@@ -542,6 +553,7 @@ class Trainer:
                     is_target_mask=is_target_mask,
                     input_sensor_ids=input_sensor_ids,
                     padding_mask=padding_mask,
+                    lengths=lengths,
                     attn_mask=None,
                     return_dict=False,
                 )

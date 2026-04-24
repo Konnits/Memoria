@@ -277,7 +277,11 @@ class OrdinalPositionalEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         self.register_buffer("pe_buffer", pe.unsqueeze(0))  # [1, max_len, d_model]
 
-    def forward(self, timestamps: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        timestamps: torch.Tensor,
+        padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         B, L = timestamps.shape
         pe_buffer = cast(torch.Tensor, self.pe_buffer)
         return pe_buffer[:, :L, :].expand(B, -1, -1)

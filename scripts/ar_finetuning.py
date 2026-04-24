@@ -4,7 +4,7 @@ import time
 import torch
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from torch.utils.data import DataLoader
 from colorama import Fore, Style
 
@@ -14,6 +14,7 @@ from ts_transformer.data import (
 from ts_transformer.data.timeseries_dataset import TimeSeriesDatasetConfig
 from ts_transformer.data.sequence_builder import AutoregressiveSequenceBuilder
 from ts_transformer.training import Trainer
+from ts_transformer.training.metrics import compute_regression_metrics
 from ts_transformer.models.time_series_encoder_decoder import TimeSeriesEncoderDecoder
 
 def _timestamps_to_float(col: pd.Series) -> np.ndarray:
@@ -42,11 +43,45 @@ class AdvancedARTimeSeriesDataset(TimeSeriesDataset):
         # para que max_anchor sea seguro para CUALQUIER modo.
         max_possible_offset = max(max(self.contiguous_offsets), max(self.random_offset_pool))
         
-        # Override temporal sólo para calcular índices
+        # Override temporal sólo para calcular índices. TimeSeriesDataset cachea
+        # max_offset, así que también lo actualizamos antes de reconstruir.
         old_choices = self.config.target_offset_choices
+        old_max_offset = self.max_offset
         self.config.target_offset_choices = [max_possible_offset]
+        self.max_offset = max_possible_offset
         self._example_indices = self._build_example_indices()
         self.config.target_offset_choices = old_choices
+        self.max_offset = max(old_max_offset, max_possible_offset)
+
+    def _activate_offsets(self, offsets):
+        offsets = [int(o) for o in offsets]
+        old_state = (
+            self.offsets,
+            self.max_offset,
+            self.offsets_t,
+            self.num_available_offsets,
+            self.k_targets,
+            self.single_target_offset,
+        )
+        self.offsets = offsets
+        self.max_offset = max(offsets)
+        self.offsets_t = torch.tensor(offsets, dtype=torch.long)
+        self.num_available_offsets = len(offsets)
+        self.k_targets = min(int(self.config.num_targets), self.num_available_offsets)
+        self.single_target_offset = (
+            self.k_targets == 1 and self.num_available_offsets == 1
+        )
+        return old_state
+
+    def _restore_offsets(self, old_state) -> None:
+        (
+            self.offsets,
+            self.max_offset,
+            self.offsets_t,
+            self.num_available_offsets,
+            self.k_targets,
+            self.single_target_offset,
+        ) = old_state
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         use_contiguous = True
@@ -54,22 +89,15 @@ class AdvancedARTimeSeriesDataset(TimeSeriesDataset):
             use_contiguous = False
         elif self.ar_mode == "Mixed":
             use_contiguous = np.random.rand() > 0.5
-            
-        original_choices = self.config.target_offset_choices
-        original_min = self.config.target_offset_min
-        original_max = self.config.target_offset_max
-        
-        # Override temporary para la generación del anchor
-        self.config.target_offset_choices = self.contiguous_offsets if use_contiguous else self.random_offset_pool
-        self.config.target_offset_min = None
-        self.config.target_offset_max = None
-        
+
+        active_offsets = (
+            self.contiguous_offsets if use_contiguous else self.random_offset_pool
+        )
+        old_state = self._activate_offsets(active_offsets)
         try:
             ret = super().__getitem__(idx)
         finally:
-            self.config.target_offset_choices = original_choices
-            self.config.target_offset_min = original_min
-            self.config.target_offset_max = original_max
+            self._restore_offsets(old_state)
 
         # Garantizar que siempre haya 'num_targets' tokens, rellenando si es necesario.
         # Esto soluciona errores de batches asimétricos al usar Mixed o Random con pool < num_targets
@@ -94,7 +122,15 @@ class AdvancedARTimeSeriesDataset(TimeSeriesDataset):
             
         return ret
 
-def prepare_ar_data(mode: str, base_data_cfg, ds_idx, logger):
+def prepare_ar_data(
+    mode: str,
+    base_data_cfg,
+    ds_idx,
+    logger,
+    num_targets_override: Optional[int] = None,
+    num_workers_override: Optional[int] = None,
+    prefetch_factor: int = 4,
+):
     target_csv = f"data/processed/real_data_{ds_idx}.csv"
     if not os.path.exists(target_csv):
         return None
@@ -137,7 +173,11 @@ def prepare_ar_data(mode: str, base_data_cfg, ds_idx, logger):
     input_dim = X_train.shape[1]
     output_dim = y_train.shape[1]
 
-    num_targets = getattr(base_data_cfg, "num_targets", 4)
+    num_targets = (
+        int(num_targets_override)
+        if num_targets_override is not None and int(num_targets_override) > 0
+        else int(getattr(base_data_cfg, "num_targets", 4))
+    )
     if num_targets <= 1:
         num_targets = 4
 
@@ -156,19 +196,27 @@ def prepare_ar_data(mode: str, base_data_cfg, ds_idx, logger):
         num_target_tokens=1
     )
 
-    ds_tr = AdvancedARTimeSeriesDataset(mode, base_data_cfg, v_tr, ts_train, ds_cfg, input_dim, output_dim, sequence_builder=sqb)
-    ds_va = AdvancedARTimeSeriesDataset(mode, base_data_cfg, v_va, ts_val, ds_cfg, input_dim, output_dim, sequence_builder=sqb)
+    ds_tr = AdvancedARTimeSeriesDataset(mode, base_data_cfg, v_tr, ts_train, copy.deepcopy(ds_cfg), input_dim, output_dim, sequence_builder=sqb)
+    ds_va = AdvancedARTimeSeriesDataset(mode, base_data_cfg, v_va, ts_val, copy.deepcopy(ds_cfg), input_dim, output_dim, sequence_builder=sqb)
     # Test siempre se evalua consistentemente sobre continuous para comparar causalidad
-    ds_te = AdvancedARTimeSeriesDataset("Contiguous", base_data_cfg, v_te, ts_test, ds_cfg, input_dim, output_dim, sequence_builder=sqb)
+    ds_te = AdvancedARTimeSeriesDataset("Contiguous", base_data_cfg, v_te, ts_test, copy.deepcopy(ds_cfg), input_dim, output_dim, sequence_builder=sqb)
 
     collate_fn = build_collate_fn(pad_to_max_length=True)
+
+    cfg_workers = int(getattr(base_data_cfg, "num_workers", 0))
+    num_workers = cfg_workers if num_workers_override is None else int(num_workers_override)
+    num_workers = max(0, num_workers)
 
     loader_kwargs = dict(
         batch_size=base_data_cfg.batch_size,
         collate_fn=collate_fn,
         pin_memory=True,
-        num_workers=0,
+        num_workers=num_workers,
     )
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        if prefetch_factor > 0:
+            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
 
     train_loader = DataLoader(ds_tr, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(ds_va, shuffle=False, **loader_kwargs)
@@ -178,32 +226,115 @@ def prepare_ar_data(mode: str, base_data_cfg, ds_idx, logger):
         "train_loader": train_loader,
         "val_loader": val_loader,
         "test_loader": test_loader,
-        "t_scal": t_scal
+        "t_scal": t_scal,
+        "n_train": len(ds_tr),
+        "n_val": len(ds_va),
+        "n_test": len(ds_te),
+        "num_targets": int(getattr(ds_tr, "config").num_targets),
     }
 
-def run_ar_finetuning(mode: str, model: torch.nn.Module, model_name: str, base_data_cfg, ds_idx, training_cfg, base_ckpt_dir, device, logger):
+def _resolve_finetune_epochs(base_epochs: int, mode: str, num_targets: int) -> int:
+    epochs = int(round(max(1, base_epochs) * 0.35))
+    if mode == "Random":
+        epochs += 1
+    elif mode == "Mixed":
+        epochs += 2
+    if num_targets >= 8:
+        epochs += 2
+    return int(min(max(epochs, 6), 16))
+
+
+def _build_finetune_config(training_cfg, mode: str, num_targets: int):
+    ft_cfg = copy.deepcopy(training_cfg)
+    epochs = _resolve_finetune_epochs(
+        int(training_cfg.num_epochs),
+        mode=mode,
+        num_targets=num_targets,
+    )
+
+    lr_by_mode = {
+        "Contiguous": 2.0e-4,
+        "Random": 1.5e-4,
+        "Mixed": 1.5e-4,
+    }
+    lr = min(float(getattr(training_cfg.optimizer_config, "lr", 1e-3)), lr_by_mode.get(mode, 1.5e-4))
+
+    ft_cfg.num_epochs = epochs
+    ft_cfg.loss_name = "huber"
+    ft_cfg.grad_clip_norm = 0.5
+    ft_cfg.save_best_on = "val_rmse"
+    ft_cfg.input_noise_std = 0.0
+    ft_cfg.restore_best_weights = True
+    ft_cfg.freeze_encoder_epochs = min(max(1, epochs // 3), max(1, epochs - 2))
+    ft_cfg.unfreeze_lr = min(lr, max(lr * 0.25, 2.5e-5))
+    ft_cfg.early_stopping_patience = min(
+        max(3, epochs // 3),
+        max(3, int(getattr(training_cfg, "early_stopping_patience", 6) or 6)),
+    )
+    ft_cfg.early_stopping_min_delta = max(
+        float(getattr(training_cfg, "early_stopping_min_delta", 0.0)),
+        5e-5,
+    )
+
+    opt = ft_cfg.optimizer_config
+    opt.optimizer_name = "adamw"
+    opt.lr = lr
+    opt.weight_decay = max(float(getattr(opt, "weight_decay", 0.0)), 0.001)
+    opt.betas = (0.9, 0.95)
+    opt.scheduler_name = "cosine_warmup"
+    opt.warmup_epochs = min(2, max(1, epochs // 8))
+    opt.scheduler_T_max = epochs
+    return ft_cfg
+
+
+def run_ar_finetuning(
+    mode: str,
+    model: torch.nn.Module,
+    model_name: str,
+    base_data_cfg,
+    ds_idx,
+    training_cfg,
+    base_ckpt_dir,
+    device,
+    logger,
+    num_targets_override: Optional[int] = None,
+    num_workers_override: Optional[int] = None,
+    prefetch_factor: int = 4,
+):
     if not isinstance(model, TimeSeriesEncoderDecoder):
         return None
         
     logger.info(Fore.BLUE + f"    [AR-FT {mode}] Iniciando Finetuning Autoregresivo para {model_name}..." + Style.RESET_ALL)
     
-    data = prepare_ar_data(mode, base_data_cfg, ds_idx, logger)
+    data = prepare_ar_data(
+        mode,
+        base_data_cfg,
+        ds_idx,
+        logger,
+        num_targets_override=num_targets_override,
+        num_workers_override=num_workers_override,
+        prefetch_factor=prefetch_factor,
+    )
     if data is None:
         return None
 
-    # Estrategia de Fine-Tuning: La mitad de epocas
-    epochs = training_cfg.num_epochs // 2
-    if epochs < 1: epochs = 1
-        
-    ft_cfg = copy.deepcopy(training_cfg)
-    ft_cfg.num_epochs = epochs
+    ft_cfg = _build_finetune_config(
+        training_cfg,
+        mode=mode,
+        num_targets=int(data["num_targets"]),
+    )
+    ft_cfg.device = str(device)
     ft_cfg.checkpoint_dir = os.path.join(base_ckpt_dir, f"{model_name}_FT_AR_{mode}")
-    
-    # ESTRATEGIA DE CONGELAMIENTO (Catastrophic Forgetting Defense)
-    ft_cfg.freeze_encoder_epochs = max(1, epochs // 2)
-    # ESTRATEGIA DE FINE-TUNING (Reducir LR dramáticamente tras descongelar)
-    base_lr = getattr(ft_cfg.optimizer_config, "learning_rate", 1e-3)
-    ft_cfg.unfreeze_lr = base_lr / 10.0
+    logger.info(
+        Fore.BLUE
+        + f"    [AR-FT {mode}] cfg: epochs={ft_cfg.num_epochs}, "
+        + f"lr={ft_cfg.optimizer_config.lr:.2e}, "
+        + f"unfreeze_lr={ft_cfg.unfreeze_lr:.2e}, "
+        + f"freeze={ft_cfg.freeze_encoder_epochs}, "
+        + f"wd={ft_cfg.optimizer_config.weight_decay:.4f}, "
+        + f"targets={data['num_targets']}"
+        + Style.RESET_ALL
+    )
     
     os.makedirs(ft_cfg.checkpoint_dir, exist_ok=True)
     
@@ -218,8 +349,9 @@ def run_ar_finetuning(mode: str, model: torch.nn.Module, model_name: str, base_d
     )
 
     t_start = time.time()
-    trainer.fit()
+    history = trainer.fit()
     train_time = time.time() - t_start
+    epochs_run = len(history.get("train_loss", []))
     
     ckpt_path = os.path.join(ft_cfg.checkpoint_dir, "best_model.pt")
     if os.path.exists(ckpt_path):
@@ -230,41 +362,68 @@ def run_ar_finetuning(mode: str, model: torch.nn.Module, model_name: str, base_d
     
     all_preds = []
     all_targets = []
+    all_masks = []
     with torch.no_grad():
          for batch in data["test_loader"]:
-             is_t_mask = batch["is_target_mask"].to(device)
              iv = batch["input_values"].to(device)
              it = batch["input_timestamps"].to(device)
              tv = batch["target_values"].to(device)
+             pm = batch.get("padding_mask", None)
+             if pm is not None:
+                 pm = pm.to(device)
+             target_loss_mask = batch.get("target_loss_mask", None)
+             if target_loss_mask is not None:
+                 target_loss_mask = target_loss_mask.to(device)
              
-             B, L_tot, _ = iv.shape
-             hist_mask = ~is_t_mask
-             num_hist = int(hist_mask.sum(dim=1)[0].item())
-             num_targ = int(is_t_mask.sum(dim=1)[0].item())
-             
-             history_v = iv[hist_mask].view(B, num_hist, -1)
-             history_t = it[hist_mask].view(B, num_hist)
-             target_t = it[is_t_mask].view(B, num_targ)
+             num_targ = tv.shape[1]
+             history_v = iv[:, :-num_targ, :]
+             history_t = it[:, :-num_targ]
+             target_t = it[:, -num_targ:]
+             history_padding_mask = pm[:, :-num_targ] if pm is not None else None
              
              preds = ar_model.generate(
                  history_values=history_v,
                  history_timestamps=history_t,
-                 target_timestamps=target_t
+                 target_timestamps=target_t,
+                 history_padding_mask=history_padding_mask,
              )
              
              all_preds.append(preds.cpu())
              all_targets.append(tv.cpu())
+             if target_loss_mask is not None:
+                 all_masks.append(target_loss_mask.cpu())
 
     if len(all_preds) == 0: return None
     
     preds_cat = torch.cat(all_preds, dim=0)
     targets_cat = torch.cat(all_targets, dim=0)
+    mask_cat = torch.cat(all_masks, dim=0) if all_masks else None
     
-    from ts_transformer.training.metrics import compute_regression_metrics
-    test_metrics = compute_regression_metrics(preds_cat.view(-1, 1), targets_cat.view(-1, 1), prefix="test_ar_")
+    if mask_cat is not None and torch.any(mask_cat > 0.0):
+        valid = mask_cat > 0.0
+        preds_for_metrics = preds_cat[valid].view(-1, 1)
+        targets_for_metrics = targets_cat[valid].view(-1, 1)
+    else:
+        preds_for_metrics = preds_cat.view(-1, 1)
+        targets_for_metrics = targets_cat.view(-1, 1)
+
+    test_metrics = compute_regression_metrics(
+        preds_for_metrics,
+        targets_for_metrics,
+        prefix="test_ar_",
+    )
     
     test_metrics["train_time_s"] = round(train_time, 2)
-    test_metrics["epochs_run"] = epochs
+    test_metrics["epochs_run"] = epochs_run
+    test_metrics["ft_mode"] = mode
+    test_metrics["ft_lr"] = float(ft_cfg.optimizer_config.lr)
+    test_metrics["ft_unfreeze_lr"] = float(ft_cfg.unfreeze_lr or 0.0)
+    test_metrics["ft_freeze_encoder_epochs"] = int(ft_cfg.freeze_encoder_epochs)
+    test_metrics["train_num_targets"] = int(data["num_targets"])
+    test_metrics["eval_num_targets"] = int(data["num_targets"])
+    test_metrics["n_train"] = int(data["n_train"])
+    test_metrics["n_val"] = int(data["n_val"])
+    test_metrics["n_test"] = int(data["n_test"])
     
     del ar_model
     torch.cuda.empty_cache()

@@ -37,16 +37,28 @@ class TimeSeriesEncoderDecoder(nn.Module):
         self.value_embedding = FeatureEmbedding(
             d_in=self.input_dim,
             d_model=self.d_model,
+            use_layernorm=True,
         )
 
-        self.time_encoding = TimePositionalEncoding(
+        self.time_encoding: nn.Module = TimePositionalEncoding(
             d_model=self.d_model,
             time_scale=config.time_scale,
+            mode=config.time_encoding_mode,
+            time_transform=config.time_transform,
         )
 
-        self.flag_embedding = TargetFlagEmbedding(
-            d_model=self.d_model,
-        )
+        self.time_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.flag_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.sensor_emb_scale = nn.Parameter(torch.tensor(1.0))
+        self.input_norm = nn.LayerNorm(self.d_model)
+
+        self.use_target_flag_embedding = bool(config.use_target_flag_embedding)
+        if self.use_target_flag_embedding:
+            self.flag_embedding: Optional[nn.Module] = TargetFlagEmbedding(
+                d_model=self.d_model,
+            )
+        else:
+            self.flag_embedding = None
 
         self.use_sensor_embedding = bool(config.use_sensor_embedding)
         if self.use_sensor_embedding:
@@ -66,10 +78,17 @@ class TimeSeriesEncoderDecoder(nn.Module):
             activation=config.activation,
         )
         
+        decoder_num_layers = (
+            int(config.decoder_num_layers)
+            if config.decoder_num_layers is not None
+            else int(config.num_layers)
+        )
+        decoder_num_layers = max(1, decoder_num_layers)
+
         self.decoder = TransformerDecoder(
             d_model=self.d_model,
             num_heads=config.num_heads,
-            num_layers=config.num_layers,
+            num_layers=decoder_num_layers,
             dim_feedforward=config.dim_feedforward,
             dropout=config.dropout,
             activation=config.activation,
@@ -84,6 +103,36 @@ class TimeSeriesEncoderDecoder(nn.Module):
         )
         self.per_target_head = nn.Linear(self.d_model, 1)
 
+    def _embed_tokens(
+        self,
+        input_values: torch.Tensor,
+        input_timestamps: torch.Tensor,
+        is_target_mask: torch.Tensor,
+        input_sensor_ids: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        value_emb = self.value_embedding(input_values)
+        time_emb = self.time_encoding(
+            input_timestamps,
+            padding_mask=padding_mask,
+            lengths=lengths,
+        ).to(value_emb.dtype)
+
+        x_all = value_emb + self.time_emb_scale.to(value_emb.dtype) * time_emb
+
+        if self.flag_embedding is not None:
+            flag_emb = self.flag_embedding(is_target_mask).to(value_emb.dtype)
+            x_all = x_all + self.flag_emb_scale.to(value_emb.dtype) * flag_emb
+
+        if self.use_sensor_embedding:
+            if input_sensor_ids is None:
+                raise ValueError("input_sensor_ids es requerido cuando use_sensor_embedding=True.")
+            sensor_emb = self.sensor_embedding(input_sensor_ids.to(torch.long)).to(value_emb.dtype)
+            x_all = x_all + self.sensor_emb_scale.to(value_emb.dtype) * sensor_emb
+
+        return self.input_norm(x_all)
+
     def forward(
         self,
         input_values: torch.Tensor,
@@ -91,6 +140,7 @@ class TimeSeriesEncoderDecoder(nn.Module):
         is_target_mask: torch.Tensor,
         input_sensor_ids: Optional[torch.Tensor] = None,
         padding_mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
         attn_mask: Optional[torch.Tensor] = None,
         return_dict: bool = False,
         return_all_layers: bool = False,
@@ -101,16 +151,14 @@ class TimeSeriesEncoderDecoder(nn.Module):
         """
         B, L, D_in = input_values.shape
 
-        # Generar embeddings base para toda la secuencia
-        value_emb = self.value_embedding(input_values)
-        time_emb = self.time_encoding(input_timestamps).to(value_emb.dtype)
-        flag_emb = self.flag_embedding(is_target_mask).to(value_emb.dtype)
-
-        x_all = value_emb + time_emb + flag_emb
-
-        if self.use_sensor_embedding:
-            sensor_emb = self.sensor_embedding(input_sensor_ids.to(torch.long))
-            x_all = x_all + sensor_emb
+        x_all = self._embed_tokens(
+            input_values=input_values,
+            input_timestamps=input_timestamps,
+            is_target_mask=is_target_mask,
+            input_sensor_ids=input_sensor_ids,
+            padding_mask=padding_mask,
+            lengths=lengths,
+        )
 
         # Separar historial de target estructuralmente (Slicing)
         # Asumiendo contrato de SequenceBuilder: targets siempre al final
@@ -212,6 +260,8 @@ class TimeSeriesEncoderDecoder(nn.Module):
         target_timestamps: torch.Tensor,
         history_sensor_ids: Optional[torch.Tensor] = None,
         target_sensor_ids: Optional[torch.Tensor] = None,
+        history_padding_mask: Optional[torch.Tensor] = None,
+        history_lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Genera predicciones autoregresivamente para un conjunto de timestamps futuros.
@@ -221,6 +271,9 @@ class TimeSeriesEncoderDecoder(nn.Module):
         history_values : [B, L, input_dim]
         history_timestamps : [B, L]
         target_timestamps : [B, M]
+        history_padding_mask : [B, L], opcional
+            True indica padding en la historia. Permite evaluar batches con
+            left-padding sin contaminar el encoder ni el origen temporal.
         ...
         
         Returns
@@ -236,37 +289,67 @@ class TimeSeriesEncoderDecoder(nn.Module):
              raise NotImplementedError("Generate autoregresivo solo soporta modo Dense por ahora.")
              
         device = history_values.device
+        dtype = history_values.dtype
+        if history_padding_mask is not None:
+            history_padding_mask = history_padding_mask.to(device=device, dtype=torch.bool)
+        if history_lengths is not None:
+            history_lengths = history_lengths.to(device=device)
+
+        history_mask = torch.zeros(B, L, dtype=torch.bool, device=device)
+        history_emb = self._embed_tokens(
+            input_values=history_values,
+            input_timestamps=history_timestamps,
+            is_target_mask=history_mask,
+            input_sensor_ids=history_sensor_ids,
+            padding_mask=history_padding_mask,
+            lengths=history_lengths,
+        )
+        encoder_output = self.encoder(
+            history_emb,
+            key_padding_mask=history_padding_mask,
+            attn_mask=None,
+            return_all_layers=False,
+        )
         
         # Guardaremos las predicciones que generemos
         generations = []
         
         # El primer input al decoder es un token placeholder (ej. ceros)
-        current_target_inputs = torch.zeros(B, 1, D_in, dtype=torch.float32, device=device)
+        current_target_inputs = torch.zeros(B, 1, D_in, dtype=dtype, device=device)
         
         for k in range(M):
-            # Construir batch para evaluar el target en el paso k
+            # Construir embeddings con la referencia temporal de la historia,
+            # pero reutilizar la salida del encoder ya calculada.
             input_values = torch.cat([history_values, current_target_inputs], dim=1)
-            
-            # Los timestamps incluyen historia + los targets hasta k
             current_target_timestamps = target_timestamps[:, :k+1]
             input_timestamps = torch.cat([history_timestamps, current_target_timestamps], dim=1)
             
             is_target_mask = torch.zeros(B, L + k + 1, dtype=torch.bool, device=device)
             is_target_mask[:, L:] = True
-            
-            input_sensor_ids = None
-            if history_sensor_ids is not None:
-                current_target_sensor_ids = target_sensor_ids[:, :k+1]
-                input_sensor_ids = torch.cat([history_sensor_ids, current_target_sensor_ids], dim=1)
-            
-            # Pasada por el modelo
-            preds = self.forward(
+            full_padding_mask = None
+            if history_padding_mask is not None:
+                target_padding = torch.zeros(B, k + 1, dtype=torch.bool, device=device)
+                full_padding_mask = torch.cat([history_padding_mask, target_padding], dim=1)
+
+            x_all = self._embed_tokens(
                 input_values=input_values,
                 input_timestamps=input_timestamps,
                 is_target_mask=is_target_mask,
-                input_sensor_ids=input_sensor_ids,
-                return_dict=False
-            ) # [B, k+1, output_dim] o [B, output_dim] si k=0
+                padding_mask=full_padding_mask,
+            )
+            x_dec = x_all[:, L:, :]
+
+            decoder_output = self.decoder(
+                x_dec,
+                encoder_out=encoder_output,
+                tgt_key_padding_mask=None,
+                memory_key_padding_mask=history_padding_mask,
+                tgt_attn_mask=None,
+                cross_attn_mask=None,
+                is_causal=bool(self.config.use_causal_mask),
+                return_all_layers=False,
+            )
+            preds = self.head(decoder_output)
             
             if preds.dim() == 2:
                 # k=0
@@ -279,7 +362,7 @@ class TimeSeriesEncoderDecoder(nn.Module):
             
             # Convertimos predicción a input_dim si no es el último paso
             if k < M - 1:
-                next_input = torch.zeros(B, 1, D_in, dtype=torch.float32, device=device)
+                next_input = torch.zeros(B, 1, D_in, dtype=dtype, device=device)
                 out_d = min(D_in, self.output_dim)
                 next_input[:, 0, :out_d] = latest_pred[:, 0, :out_d]
                 current_target_inputs = torch.cat([current_target_inputs, next_input], dim=1)

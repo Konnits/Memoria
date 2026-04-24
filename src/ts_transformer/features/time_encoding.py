@@ -7,6 +7,77 @@ import torch
 from torch import nn
 
 
+def _get_reference_timestamps(
+    timestamps: torch.Tensor,
+    padding_mask: Optional[torch.Tensor] = None,
+    lengths: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Devuelve el primer timestamp válido por secuencia.
+
+    Si no hay padding, coincide con timestamps[:, :1]. Con left-padding,
+    evita usar el 0.0 artificial del collate como origen temporal.
+    """
+    if lengths is not None:
+        if lengths.ndim != 1 or lengths.shape[0] != timestamps.shape[0]:
+            raise ValueError(
+                "lengths debe tener shape [B]. "
+                f"timestamps={tuple(timestamps.shape)}, lengths={tuple(lengths.shape)}"
+            )
+
+        seq_len = timestamps.shape[1]
+        first_valid_idx = (seq_len - lengths.to(torch.long)).unsqueeze(1)
+        return timestamps.gather(1, first_valid_idx)
+
+    if padding_mask is None:
+        return timestamps[:, :1]
+
+    if padding_mask.shape != timestamps.shape:
+        raise ValueError(
+            "padding_mask debe tener la misma shape que timestamps. "
+            f"timestamps={tuple(timestamps.shape)}, padding_mask={tuple(padding_mask.shape)}"
+        )
+
+    valid_mask = ~padding_mask
+    if not torch.all(valid_mask.any(dim=1)):
+        raise ValueError("Cada secuencia debe tener al menos un timestamp válido.")
+
+    first_valid_idx = valid_mask.to(torch.int64).argmax(dim=1, keepdim=True)
+    return timestamps.gather(1, first_valid_idx)
+
+
+def compute_relative_time_deltas(
+    timestamps: torch.Tensor,
+    time_scale: float,
+    padding_mask: Optional[torch.Tensor] = None,
+    lengths: Optional[torch.Tensor] = None,
+    time_transform: Literal["linear", "log1p"] = "linear",
+) -> torch.Tensor:
+    """
+    Calcula tiempos relativos por secuencia respecto del primer timestamp válido.
+    """
+    if timestamps.ndim != 2:
+        raise ValueError(
+            f"Se esperaban timestamps 2D [B, L], pero se obtuvo {timestamps.shape}."
+        )
+    if time_scale <= 0.0:
+        raise ValueError("time_scale debe ser > 0.")
+    if time_transform not in {"linear", "log1p"}:
+        raise ValueError("time_transform debe ser 'linear' o 'log1p'.")
+
+    t0 = _get_reference_timestamps(
+        timestamps,
+        padding_mask=padding_mask,
+        lengths=lengths,
+    )
+    tau = (timestamps - t0) / float(time_scale)
+
+    if time_transform == "log1p":
+        tau = torch.log1p(torch.clamp(tau, min=0.0))
+
+    return tau
+
+
 class Time2Vec(nn.Module):
     """
     Time2Vec: encoding temporal con componentes aprendidos.
@@ -27,21 +98,50 @@ class Time2Vec(nn.Module):
     temporal de cada dataset.
     """
 
-    def __init__(self, d_model: int) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        min_period: float = 2.0,
+        max_period: float = 512.0,
+        use_layernorm: bool = True,
+    ) -> None:
         super().__init__()
+        if d_model <= 0:
+            raise ValueError("d_model debe ser > 0.")
+        if min_period <= 0.0 or max_period <= 0.0:
+            raise ValueError("min_period y max_period deben ser > 0.")
+        if min_period > max_period:
+            raise ValueError("min_period no puede ser mayor que max_period.")
+
         self.d_model = d_model
 
         # 1 componente lineal + (d_model-1) componentes periódicos
-        self.linear_weight = nn.Parameter(torch.randn(1) * 0.01)
+        self.linear_weight = nn.Parameter(torch.full((1,), 1.0 / float(max_period)))
         self.linear_bias = nn.Parameter(torch.zeros(1))
 
         n_periodic = d_model - 1
-        # Inicializar frecuencias en un rango diverso para cubrir
-        # múltiples escalas temporales desde el inicio.
-        self.periodic_weights = nn.Parameter(
-            torch.randn(n_periodic) * 0.1
-        )
-        self.periodic_biases = nn.Parameter(torch.zeros(n_periodic))
+        if n_periodic > 0:
+            periods = torch.logspace(
+                math.log10(float(min_period)),
+                math.log10(float(max_period)),
+                steps=n_periodic,
+                dtype=torch.float32,
+            )
+            periodic_weights = (2.0 * math.pi) / periods
+            phase_offset = math.pi / max(n_periodic, 1)
+            periodic_biases = torch.linspace(
+                0.0,
+                2.0 * math.pi,
+                steps=n_periodic + 1,
+                dtype=torch.float32,
+            )[:-1] + phase_offset
+        else:
+            periodic_weights = torch.empty(0, dtype=torch.float32)
+            periodic_biases = torch.empty(0, dtype=torch.float32)
+
+        self.periodic_weights = nn.Parameter(periodic_weights)
+        self.periodic_biases = nn.Parameter(periodic_biases)
+        self.output_norm = nn.LayerNorm(d_model) if use_layernorm else nn.Identity()
 
     def forward(self, tau: torch.Tensor) -> torch.Tensor:
         """
@@ -62,13 +162,16 @@ class Time2Vec(nn.Module):
         # para evitar problemas numéricos bajo AMP sin saturar su señal con tanh.
         linear = tau_exp * self.linear_weight.to(torch.float32) + self.linear_bias.to(torch.float32)
 
-        # Componentes periódicos: [B, L, n_periodic]
-        periodic = torch.sin(
-            tau_exp * self.periodic_weights.to(torch.float32)
-            + self.periodic_biases.to(torch.float32)
-        )
+        if self.periodic_weights.numel() > 0:
+            periodic = torch.sin(
+                tau_exp * self.periodic_weights.to(torch.float32)
+                + self.periodic_biases.to(torch.float32)
+            )
+            enc = torch.cat([linear, periodic], dim=-1)
+        else:
+            enc = linear
 
-        return torch.cat([linear, periodic], dim=-1)  # [B, L, d_model]
+        return self.output_norm(enc)  # [B, L, d_model]
 
 
 class TimePositionalEncoding(nn.Module):
@@ -157,13 +260,24 @@ class TimePositionalEncoding(nn.Module):
         else:
             self.register_buffer("div_term", torch.empty(1, d_model))
 
-    def forward(self, timestamps: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        timestamps: torch.Tensor,
+        padding_mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Parameters
         ----------
         timestamps:
             Tensor [B, L] con timestamps numéricos (float).
             Debe estar ordenado en el tiempo para cada secuencia.
+        padding_mask:
+            Tensor bool [B, L] opcional. True indica padding y se ignora
+            al elegir el timestamp de referencia t0.
+        lengths:
+            Tensor [B] opcional con la longitud válida por secuencia. Si se
+            provee, evita escanear la máscara de padding y produce el mismo t0.
 
         Returns
         -------
@@ -176,14 +290,13 @@ class TimePositionalEncoding(nn.Module):
             )
 
         B, L = timestamps.shape
-
-        # t0: primer timestamp de cada secuencia, shape [B, 1]
-        t0 = timestamps[:, :1]
-        # τ = (t - t0) / time_scale
-        tau = (timestamps - t0) / self.time_scale  # [B, L]
-
-        if self.time_transform == "log1p":
-            tau = torch.log1p(torch.clamp(tau, min=0.0))
+        tau = compute_relative_time_deltas(
+            timestamps,
+            time_scale=self.time_scale,
+            padding_mask=padding_mask,
+            lengths=lengths,
+            time_transform=self.time_transform,
+        )
 
         if self.mode == "sinusoidal":
             # tau: [B, L] -> [B, L, 1]

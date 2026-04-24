@@ -66,7 +66,7 @@ def _build_adam_like_optimizer(
         "weight_decay": weight_decay,
     }
 
-    has_cuda_params = any(p.is_cuda for p in params)
+    has_cuda_params = any(p.is_cuda for p in _iter_optimizer_params(params))
     if not has_cuda_params:
         return optimizer_cls(params, **common_kwargs)
 
@@ -77,6 +77,39 @@ def _build_adam_like_optimizer(
         return optimizer_cls(params, **common_kwargs, foreach=True)
 
 
+def _iter_optimizer_params(params):
+    for item in params:
+        if isinstance(item, dict):
+            yield from item.get("params", [])
+        else:
+            yield item
+
+
+def _build_parameter_groups(
+    model: nn.Module,
+    weight_decay: float,
+):
+    decay_params = []
+    no_decay_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if "time_encoding.time2vec" in name:
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+
+    if not no_decay_params:
+        return decay_params
+
+    groups = []
+    if decay_params:
+        groups.append({"params": decay_params, "weight_decay": weight_decay})
+    groups.append({"params": no_decay_params, "weight_decay": 0.0})
+    return groups
+
+
 def build_optimizer(
     model: nn.Module,
     config: OptimizerConfig,
@@ -85,7 +118,7 @@ def build_optimizer(
     Construye un optimizador para los parámetros de `model`
     según la configuración proporcionada.
     """
-    params = [p for p in model.parameters() if p.requires_grad]
+    params = _build_parameter_groups(model, config.weight_decay)
 
     name = config.optimizer_name.lower()
     if name == "adam":

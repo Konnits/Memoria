@@ -100,7 +100,20 @@ def main():
     strats = MultiHorizonBaselineWrapper(STraTSNetwork(num_features=input_dim + 1, d_model=d_model, num_classes=output_dim), "strats", d_model, output_dim, use_sensor_embedding=use_events).to(device)
     strats.eval()
 
-    coform = MultiHorizonBaselineWrapper(CompatibleTransformer(num_variates=input_dim if use_events else 1, d_model=d_model, num_classes=output_dim), "coformer", d_model, output_dim, use_sensor_embedding=use_events).to(device)
+    coform = MultiHorizonBaselineWrapper(
+        CompatibleTransformer(
+            num_variates=input_dim if use_events else 1,
+            d_model=d_model,
+            n_heads=model_cfg.num_heads,
+            n_layers=model_cfg.num_layers,
+            dropout=model_cfg.dropout,
+            num_classes=output_dim,
+        ),
+        "coformer",
+        d_model,
+        output_dim,
+        use_sensor_embedding=use_events,
+    ).to(device)
     coform.eval()
 
     models = {"Custom": custom, "CoFormer_Adapter": coform, "STraTS_Adapter": strats}

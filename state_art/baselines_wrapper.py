@@ -44,55 +44,40 @@ class MultiHorizonBaselineWrapper(nn.Module):
     def _extract_history_and_targets(self, input_values, input_timestamps, is_target_mask, padding_mask, input_sensor_ids):
         """
         Extrae tensores rectangulares para historia y targets.
-        Aplica un único punto de sincronización CPU-GPU para extraer num_targets y max_H.
-        Usa vectorización con argsort para evitar indexación booleana.
+        Aprovecha que SequenceBuilder coloca los tokens target al final de la
+        secuencia, evitando ordenar todo el batch en cada forward.
         """
         B, max_len, D = input_values.shape
-        device = input_values.device
-        
-        hist_mask = ~is_target_mask
-        if padding_mask is not None:
-            hist_mask = hist_mask & ~padding_mask
-            
-        hist_lens = hist_mask.sum(dim=1)
-        
-        # --- ÚNICO PUNTO DE SINCRONIZACIÓN ---
-        # Se acepta el costo de este .item() porque recortar al max_H real
-        # es crítico para evitar explosión cuadrática de atención en STraTS denso.
-        # No se cachea num_targets por seguridad (asume variabilidad entre batches).
-        max_H = hist_lens.max().item() if hist_lens.max().item() > 0 else 1
         num_targets = int(is_target_mask[0].sum().item())
-        
-        # Vectorización asíncrona compartida
-        pos = torch.arange(max_len, device=device).unsqueeze(0).expand(B, max_len)
-        
-        # --- Extracción de Targets ---
-        # Empujar los elementos válidos de target a la izquierda usando argsort
-        # Esto evita la indexación booleana `tensor[mask]` que causa un CPU-GPU sync oculto
-        sort_keys_tgt = torch.where(is_target_mask, pos, pos + max_len)
-        _, sorted_idx_tgt = torch.sort(sort_keys_tgt, dim=1)
-        tgt_idx = sorted_idx_tgt[:, :num_targets]
-        
-        target_times = torch.gather(input_timestamps, 1, tgt_idx)
+
+        if num_targets <= 0:
+            raise ValueError("El batch no contiene tokens target.")
+
+        hist_end = max_len - num_targets
+        if hist_end <= 0:
+            raise ValueError("El batch no contiene historia antes de los tokens target.")
+
+        # Los targets son el bloque final global porque el collate usa left-padding.
+        target_times = input_timestamps[:, hist_end:]
         target_s_ids = None
         if self.use_sensor_embedding and input_sensor_ids is not None:
-            target_s_ids = torch.gather(input_sensor_ids, 1, tgt_idx)
+            target_s_ids = input_sensor_ids[:, hist_end:]
 
-        # --- Extracción de Historia ---
-        # Empujar historia válida a la izquierda
-        sort_keys_hist = torch.where(hist_mask, pos, pos + max_len)
-        _, sorted_idx_hist = torch.sort(sort_keys_hist, dim=1)
-        
-        # Cortar a la cantidad máxima REAL de historia en el batch
-        hist_idx = sorted_idx_hist[:, :max_H]
-        
-        hist_times = torch.gather(input_timestamps, 1, hist_idx)
-        hist_values = torch.gather(input_values, 1, hist_idx.unsqueeze(-1).expand(-1, -1, D))
-        hist_valid = torch.gather(hist_mask, 1, hist_idx)
+        hist_mask = ~is_target_mask[:, :hist_end]
+        if padding_mask is not None:
+            hist_mask = hist_mask & ~padding_mask[:, :hist_end]
+
+        hist_lens = hist_mask.sum(dim=1)
+        max_H = max(int(hist_lens.max().item()), 1)
+        hist_start = max(hist_end - max_H, 0)
+
+        hist_times = input_timestamps[:, hist_start:hist_end]
+        hist_values = input_values[:, hist_start:hist_end, :]
+        hist_valid = hist_mask[:, hist_start:hist_end]
         
         hist_s_ids = None
         if self.use_sensor_embedding and input_sensor_ids is not None:
-            hist_s_ids = torch.gather(input_sensor_ids, 1, hist_idx)
+            hist_s_ids = input_sensor_ids[:, hist_start:hist_end]
             
         return hist_times, hist_values, hist_valid, hist_s_ids, target_times, target_s_ids, num_targets
 
@@ -239,7 +224,11 @@ class MultiHorizonBaselineWrapper(nn.Module):
                 all_masked = mha_mask.all(dim=1)
                 mha_mask[:, 0] = mha_mask[:, 0] & (~all_masked)
                 
-                attn_out, _ = self.base_model.agg_mha(q, h_l, h_l, key_padding_mask=mha_mask)
+                attn_out, _ = self.base_model.agg_mha(
+                    q, h_l, h_l,
+                    key_padding_mask=mha_mask,
+                    need_weights=False,
+                )
                 f_variates[:, i, :] = attn_out.squeeze(1)
             h_global = torch.mean(f_variates, dim=1)
         else:
@@ -276,4 +265,3 @@ class MultiHorizonBaselineWrapper(nn.Module):
             "encoder_output": h_global.unsqueeze(1),
         }
         return out
-

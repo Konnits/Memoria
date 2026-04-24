@@ -149,7 +149,14 @@ def main():
     strats_wrapped = MultiHorizonBaselineWrapper(strats_base, "strats", d_model_sota, output_dim, use_sensor_embedding=use_events)
     
     # CoFormer
-    coformer_base = CompatibleTransformer(num_variates=input_dim if use_events else 1, d_model=d_model_sota, num_classes=output_dim)
+    coformer_base = CompatibleTransformer(
+        num_variates=input_dim if use_events else 1,
+        d_model=d_model_sota,
+        n_heads=model_cfg.num_heads,
+        n_layers=model_cfg.num_layers,
+        dropout=model_cfg.dropout,
+        num_classes=output_dim,
+    )
     coformer_wrapped = MultiHorizonBaselineWrapper(coformer_base, "coformer", d_model_sota, output_dim, use_sensor_embedding=use_events)
     
     models = {

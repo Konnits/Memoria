@@ -148,6 +148,11 @@ def load_model_config(path: str) -> TimeSeriesTransformerConfig:
         use_temporal_attn_bias=bool(cfg.get("use_temporal_attn_bias", False)),
         use_target_flag_embedding=bool(cfg.get("use_target_flag_embedding", True)),
         validate_inputs=bool(cfg.get("validate_inputs", True)),
+        decoder_num_layers=(
+            int(cfg["decoder_num_layers"])
+            if "decoder_num_layers" in cfg and cfg["decoder_num_layers"] is not None
+            else None
+        ),
     )
 
 

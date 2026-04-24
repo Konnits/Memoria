@@ -7,10 +7,20 @@ class CoFormerAttentionLayer(nn.Module):
     Capa sucesiva del Compatible Transformer.
     Consta de Extraer Atencion Temporal (Intra-variate) y Atencion de Interacción (Inter-variate).
     """
-    def __init__(self, d_model: int, n_heads: int = 8, dropout: float = 0.1, k_neighbors: int = 30):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int = 8,
+        dropout: float = 0.1,
+        k_neighbors: int = 30,
+        enable_inter_attention: bool = True,
+        is_univariate: bool = False,
+    ):
         super().__init__()
         self.n_heads = n_heads
         self.k_neighbors = k_neighbors
+        self.enable_inter_attention = bool(enable_inter_attention)
+        self.is_univariate = bool(is_univariate)
         
         self.intra_mha = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
         self.norm1 = nn.LayerNorm(d_model)
@@ -26,6 +36,15 @@ class CoFormerAttentionLayer(nn.Module):
         valid_mask: [B, S] Boolean, True = Válido, False = Padding.
         """
         B, S = x.shape[:2]
+
+        if not self.enable_inter_attention and self.is_univariate:
+            key_padding_mask = None if valid_mask is None else ~valid_mask
+            attn_out1, _ = self.intra_mha(
+                x, x, x,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )
+            return self.norm1(x + attn_out1)
         
         # Para nn.MultiheadAttention en PyTorch, attn_mask como Booleano donde True significa "No mirar / Padding".
         # 1 ========================
@@ -53,8 +72,15 @@ class CoFormerAttentionLayer(nn.Module):
         intra_mask_heads = intra_mask.repeat_interleave(self.n_heads, dim=0)
 
         # Self-attention Intra
-        attn_out1, _ = self.intra_mha(x, x, x, attn_mask=intra_mask_heads)
+        attn_out1, _ = self.intra_mha(
+            x, x, x,
+            attn_mask=intra_mask_heads,
+            need_weights=False,
+        )
         x = self.norm1(x + attn_out1)
+
+        if not self.enable_inter_attention:
+            return x
         
         # 2 ========================
         # Inter-Variate Attention
@@ -89,7 +115,11 @@ class CoFormerAttentionLayer(nn.Module):
         inter_mask_heads = inter_mask.repeat_interleave(self.n_heads, dim=0)
         
         # Self-attention Inter
-        attn_out2, _ = self.inter_mha(x, x, x, attn_mask=inter_mask_heads)
+        attn_out2, _ = self.inter_mha(
+            x, x, x,
+            attn_mask=inter_mask_heads,
+            need_weights=False,
+        )
         x = self.norm2(x + attn_out2)
         
         return x
