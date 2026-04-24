@@ -17,6 +17,7 @@ Uso:
   python scripts/benchmark_final.py --start-dataset 7 --end-dataset 17
   python scripts/benchmark_final.py --seeds 42 84 126
   python scripts/benchmark_final.py --skip-ablation   (sólo modelos principales)
+  python scripts/benchmark_final.py --include-large
   python scripts/benchmark_final.py --include-encdec --encdec-num-targets 8
   python scripts/benchmark_final.py --include-encdec --enable-encdec-finetuning --encdec-ft-modes Mixed
 
@@ -92,6 +93,8 @@ def parse_args():
                    help="Si se activa, omite NoTimeEncoding y NoTargetToken")
     p.add_argument("--skip-baselines", action="store_true",
                    help="Si se activa, omite sólo los baselines simples Persistence y Linear")
+    p.add_argument("--include-large", action="store_true",
+                   help="Incluye variantes Large; por defecto se omiten para mantener viable el benchmark")
     p.add_argument("--include-encdec", action="store_true",
                    help="Incluye variantes optimizadas Encoder-Decoder")
     p.add_argument("--encdec-num-targets", type=int, default=0,
@@ -301,6 +304,7 @@ def build_models(
     output_dim: int,
     skip_ablation: bool = False,
     skip_baselines: bool = False,
+    include_large: bool = False,
     include_encdec: bool = False,
     encdec_num_targets: int | None = None,
 ):
@@ -332,13 +336,14 @@ def build_models(
     cfg_small.num_sensors = input_dim if use_events else 0
     cfg_small.time_scale = float(dataset_time_scale)
 
-    # Nota: modelos Large desactivados temporalmente para priorizar tiempo de cómputo.
-    # Para reactivarlos, descomentar este bloque y las líneas de instanciación más abajo.
-    cfg_large = load_model_config("configs/model/transformer_large.yaml")
-    cfg_large.input_dim = model_input_dim
-    cfg_large.output_dim = output_dim
-    cfg_large.use_sensor_embedding = bool(use_events)
-    cfg_large.num_sensors = input_dim if use_events else 0
+    cfg_large = None
+    if include_large:
+        cfg_large = load_model_config("configs/model/transformer_large.yaml")
+        cfg_large.input_dim = model_input_dim
+        cfg_large.output_dim = output_dim
+        cfg_large.use_sensor_embedding = bool(use_events)
+        cfg_large.num_sensors = input_dim if use_events else 0
+        cfg_large.time_scale = float(dataset_time_scale)
 
     # --- Modelo propuesto ---
     models["Custom-Small"] = TimeSeriesTransformer(copy.deepcopy(cfg_small))
@@ -365,8 +370,9 @@ def build_models(
         )
     )
     trainable["Custom-AttnPool"] = True
-    models["Custom-Large"] = TimeSeriesTransformer(copy.deepcopy(cfg_large))
-    trainable["Custom-Large"] = True
+    if include_large and cfg_large is not None:
+        models["Custom-Large"] = TimeSeriesTransformer(copy.deepcopy(cfg_large))
+        trainable["Custom-Large"] = True
 
     # --- Variante Encoder-Decoder optimizada ---
     def _make_encdec_config(base_cfg, *, decoder_num_layers: int = 1):
@@ -797,6 +803,7 @@ def main():
     logger.info(f"  Semillas: {args.seeds}")
     logger.info(f"  Ablación: {'NO' if args.skip_ablation else 'SÍ'}")
     logger.info(f"  Baselines simples: {'NO' if args.skip_baselines else 'SÍ'}")
+    logger.info(f"  Modelos Large: {'SÍ' if args.include_large else 'NO'}")
     logger.info(f"  EncDec optimizado: {'SÍ' if args.include_encdec else 'NO'}")
     if args.include_encdec:
         logger.info(
@@ -935,6 +942,7 @@ def main():
                 data["output_dim"],
                 skip_ablation=args.skip_ablation,
                 skip_baselines=args.skip_baselines,
+                include_large=args.include_large,
                 include_encdec=args.include_encdec,
                 encdec_num_targets=(
                     encdec_train_targets
