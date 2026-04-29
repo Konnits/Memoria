@@ -1,184 +1,152 @@
 \chapter{Experimentos}
 \label{cap:experimentos}
 
-En este capítulo se describe la metodología experimental utilizada para evaluar el modelo propuesto en la memoria. El objetivo principal es determinar si la arquitectura presentada en el Capítulo~\ref{cap:modelo-no-equiespaciado} entrega predicciones competitivas en series de tiempo reales no equiespaciadas, comparándola con baselines relevantes del estado del arte y con baselines simples que sirven como referencia inferior.
-
-\hfill
-
-La campaña experimental abarca los 17 datasets reales procesados de la colección, con múltiples semillas aleatorias por dataset para cuantificar la variabilidad entre ejecuciones. Se incluyen además estudios de ablación para aislar el aporte individual de cada componente clave de la arquitectura, y un análisis de costo computacional para contextualizar los beneficios del modelo en términos prácticos.
+Este capítulo fija la metodología experimental utilizada para evaluar \CTTransformer\ y sus variantes. La fase experimental de esta memoria se da por cerrada con cinco datasets reales y tres semillas por combinación dataset--modelo. Por lo tanto, el Capítulo~\ref{cap:resultados} reporta conclusiones finales para esta evaluación, aunque el alcance estadístico sigue estando limitado por el número de datasets.
 
 \section{Objetivos experimentales}
 \label{sec:objetivos-experimentales}
 
-Los experimentos de esta memoria persiguen seis objetivos complementarios:
+Los experimentos persiguen los siguientes objetivos:
 
 \begin{enumerate}
-	\item \textbf{Verificar factibilidad}: comprobar que un encoder \Transformer\ con encoding temporal continuo y token objetivo puede entrenarse de manera estable sobre series temporales reales con timestamps irregulares.
-	\item \textbf{Evaluar desempeño predictivo}: medir el error de predicción del modelo propuesto mediante métricas estándar de regresión, con énfasis en MSE, RMSE y MAE, usando el conjunto de test retenido.
-	\item \textbf{Comparar contra baselines fuertes e informados}: contrastar el modelo propuesto con STraTS \cite{tipirneni2022strats}, un modelo diseñado explícitamente para observaciones irregulares.
-	\item \textbf{Comparar contra baselines simples}: incluir un predictor de persistencia (último valor observado) y un modelo lineal con inyección temporal, para verificar que las mejoras no se deben a la complejidad del modelo sino a sus componentes específicos.
-	\item \textbf{Cuantificar el aporte de cada componente (ablaciones)}: medir por separado el efecto del encoding temporal continuo y del token objetivo mediante variantes controladas del modelo.
-	\item \textbf{Evaluar escalabilidad y causalidad (Autoregresión)}: analizar el comportamiento al escalar la complejidad paramétrica y medir el beneficio empírico de un entrenamiento autoregresivo mediante transferencia de pesos.
-	\item \textbf{Evaluar costo versus beneficio}: registrar el número de parámetros y el tiempo de entrenamiento de cada modelo para contextualizar las mejoras en términos de eficiencia.
+	\item \textbf{Verificar factibilidad}: comprobar que arquitecturas basadas en \Transformers\ con timestamps reales y tokens objetivo pueden entrenarse de manera estable sobre series reales no equiespaciadas sin regularizarlas a una grilla temporal fija.
+	\item \textbf{Evaluar desempeño predictivo}: medir MSE, RMSE y MAE en el conjunto de test retenido.
+	\item \textbf{Comparar contra baselines informados}: contrastar la propuesta con STraTS \cite{tipirneni2022strats} y CoFormer \cite{wei2023coformer}, adaptados a la tarea de pronóstico multi-horizonte.
+	\item \textbf{Comparar contra baselines simples}: incluir persistencia y un modelo lineal temporal para verificar que las mejoras no provengan sólo de aumentar la complejidad.
+	\item \textbf{Cuantificar ablaciones}: medir el aporte del encoding temporal continuo y del identificador de token objetivo.
+	\item \textbf{Explorar variantes arquitectónicas}: evaluar tamaños pequeños y base, resumen atencional de la historia, Time2Vec, sesgo temporal de atención y variantes encoder--decoder.
+	\item \textbf{Evaluar costo versus beneficio}: registrar parámetros, tiempo de entrenamiento y épocas ejecutadas.
+	\item \textbf{Delimitar el alcance de las conclusiones}: separar las señales consistentes del benchmark cerrado de las afirmaciones que requerirían más datasets, más semillas o evaluación multivariada.
 \end{enumerate}
 
 \section{Escenario experimental}
 \label{sec:escenario-real}
 
-La evaluación se realiza sobre la colección completa de 17 datasets reales procesados, almacenados como archivos \textttbreak{real\_data\_i.csv}. El benchmark fue diseñado para recorrer secuencialmente todos los datasets, entrenando y evaluando cada modelo con un pipeline homogéneo de preprocesamiento, escalado, entrenamiento y evaluación final sobre test.
+La evaluación final se realiza sobre los archivos \textttbreak{real\_data\_i.csv}, con $i=1,\dots,5$. Cada dataset se ordena temporalmente y se divide respetando el tiempo en entrenamiento, validación y prueba, con proporciones 70\%, 15\% y 15\%, respectivamente. Para cada modelo se ejecutan tres semillas: 42, 84 y 126.
 
 \hfill
 
-El script de benchmark (\textttbreak{benchmark\_final.py}) incorpora las siguientes características de diseño:
-\begin{itemize}
-	\item \textbf{Reanudabilidad}: el progreso se guarda en un archivo CSV después de cada modelo entrenado. Si el proceso se interrumpe, puede reanudarse desde el último punto completado ejecutando el mismo comando.
-	\item \textbf{Evaluación separada en test}: tras el entrenamiento, cada modelo se evalúa en el split de test (15\% de los datos), completamente separado del splits de validación y entrenamiento.
-	\item \textbf{Múltiples semillas}: cada combinación (dataset, modelo) se ejecuta con tres semillas distintas (42, 84, 126) para cuantificar la variabilidad.
-	\item \textbf{Análisis estadístico automático}: al finalizar, se generan tests de Wilcoxon de rango con signo emparejados por dataset, intervalos de confianza bootstrap y tablas resumen con media $\pm$ desviación estándar.
-\end{itemize}
+El archivo principal de resultados es \textttbreak{benchmark\_final.csv}, ubicado en el directorio de experimentos finales. El subconjunto usado para el análisis final contiene 360 corridas balanceadas: 24 modelos con 15 corridas cada uno, correspondientes a 5 datasets y 3 semillas. Las filas parciales asociadas a otros datasets o variantes incompletas no se usan para extraer conclusiones finales.
+
+\hfill
+
+El benchmark se ejecuta mediante un orquestador reanudable. Después de cada corrida, las métricas se guardan en un archivo CSV; si el proceso se interrumpe, puede continuar desde el último punto completado. Esta decisión fue importante porque algunos modelos, en especial CoFormer y las variantes encoder--decoder con ajuste autoregresivo, tienen costos de entrenamiento sustanciales.
 
 \subsection{Variables, partición temporal y preprocesamiento}
 \label{sec:variables-y-preproceso}
 
-En las configuraciones de datos reales utilizadas en esta memoria, cada serie se organiza a partir de:
+En la configuración activa de datos reales, cada serie contiene:
 \begin{itemize}
 	\item una columna temporal \textttbreak{timestamp},
-	\item una variable observada \textttbreak{valor}, utilizada tanto como entrada como variable objetivo de predicción,
-	\item una partición temporal en entrenamiento, validación y prueba de proporciones 70\%, 15\% y 15\%, respectivamente.
+	\item una variable observada \textttbreak{valor}, usada como entrada y como objetivo de predicción,
+	\item una partición temporal entrenamiento--validación--prueba de 70\%--15\%--15\%.
 \end{itemize}
 
-Antes de entrenar los modelos, los datos se ordenan por tiempo y se normalizan mediante \textttbreak{StandardScaler}. El escalado se ajusta sólo con los datos de entrenamiento y luego se aplica a validación y prueba, evitando así fuga de información desde el futuro hacia el pasado.
-
-\hfill
-
-Las ventanas supervisadas se construyen respetando el orden temporal. La configuración usa una historia máxima de 500 observaciones y una historia mínima de 20 observaciones, lo que permite que el modelo vea contextos de distinta longitud durante el entrenamiento. Esta decisión es consistente con el objetivo de robustecer la arquitectura frente a cambios en la densidad temporal de muestreo.
+El escalado se ajusta sólo con el segmento de entrenamiento y luego se aplica a validación y prueba, evitando fuga de información desde el futuro. Las ventanas supervisadas usan una historia máxima de 500 observaciones y una historia mínima de 20 observaciones. Para los modelos no autoregresivos se seleccionan hasta cuatro timestamps objetivo dentro de offsets entre 1 y 30 pasos futuros. La escala temporal del modelo se estima por dataset a partir de la mediana de los deltas temporales positivos del bloque de entrenamiento, con límites conservadores para evitar escalas patológicas.
 
 \section{Modelos comparados}
 \label{sec:modelos-comparados}
 
-En esta memoria se comparan los siguientes modelos, agrupados en cuatro categorías:
+Los modelos evaluados se agrupan en cinco familias.
 
-\subsection{Arquitecturas propuestas}
+\subsection{Familia \CTTransformer}
+
 \begin{itemize}
-	\item \textbf{Custom (Solo-Encoder, sinusoidal)}: corresponde al modelo base descrito en el Capítulo~\ref{cap:modelo-no-equiespaciado}, utilizando un Encoder unificado que asimila historia y targets simultáneamente mediante una máscara diferenciadora. Emplea el encoding temporal sinusoidal fijo.
-	\item \textbf{Custom-T2V (Solo-Encoder, Time2Vec)}: variante del modelo anterior que reemplaza el encoding sinusoidal fijo por Time2Vec (Sección~\ref{sec:time2vec}) y añade el sesgo de atención temporal (Sección~\ref{sec:temporal-attention-bias}). Representa la arquitectura completa propuesta en esta memoria.
+	\item \textbf{\CTTransformerBase}: encoder \Transformer\ con embedding de valores, encoding temporal sinusoidal continuo, identificador historia--objetivo y cabeza de regresión sobre los tokens objetivo.
+	\item \textbf{\CTTransformerSmall}: misma arquitectura, con menor dimensión interna y menos capas.
+	\item \textbf{\CTTransformer\ con resumen atencional}: fusiona el estado del token objetivo con un resumen aprendido de la historia.
+	\item \textbf{\CTTransformer\ con Time2Vec}: reemplaza el encoding sinusoidal fijo por una representación temporal aprendible basada en Time2Vec \cite{kazemi2019time2vec}.
+	\item \textbf{\CTTransformer\ con sesgo temporal}: conserva el encoding sinusoidal, pero añade un sesgo temporal directamente en los scores de atención.
+	\item \textbf{\CTTransformer\ con Time2Vec y sesgo temporal}: combina representación temporal aprendida y sesgo temporal de atención.
 \end{itemize}
 
-Inicialmente se consideró también una variante Encoder-Decoder que separa la historia en un encoder bidireccional y delega la predicción a un decoder con atención cruzada. Sin embargo, los experimentos preliminares revelaron que esta arquitectura rendía consistentemente igual o peor que el modelo Solo-Encoder, pese a contar con aproximadamente 2.5 veces más parámetros. Este resultado se atribuye a que el decoder procesa muy pocos tokens objetivo (1 a 4), haciendo que sus capas adicionales no aporten capacidad útil. En consecuencia, la variante Encoder-Decoder fue descartada del benchmark final.
+\subsection{Variantes encoder--decoder}
+
+Además del encoder único, se evalúan variantes encoder--decoder donde la historia se procesa en el encoder y los timestamps objetivo se procesan en el decoder mediante atención cruzada. La versión optimizada usa un decoder liviano de una capa. Se consideran dos tamaños: pequeño y base.
+
+\hfill
+
+Las variantes \textttbreak{EncDec-Opt-Small-MT8} y \textttbreak{EncDec-Opt-MT8} se entrenan con ocho tokens objetivo. Después se aplican ajustes autoregresivos con máscara causal y tres modos de provisión de objetivos:
+\begin{itemize}
+	\item \textbf{Contiguous}: offsets futuros consecutivos.
+	\item \textbf{Random}: offsets futuros muestreados desde el rango permitido.
+	\item \textbf{Mixed}: mezcla entre entrenamiento contiguo y aleatorio.
+\end{itemize}
+
+En las variantes autoregresivas, la evaluación registrada usa generación autoregresiva sobre ocho objetivos contiguos. Por esta razón, cuando se compara contra modelos no autoregresivos, la lectura correcta es que se compara el desempeño de los sistemas tal como fueron evaluados en el benchmark, no una demostración aislada bajo exactamente el mismo conjunto de consultas futuras.
 
 \subsection{Baselines del estado del arte}
-\begin{itemize}
-	\item \textbf{STraTS adaptado}: implementación basada en STraTS \cite{tipirneni2022strats}, adaptada mediante un módulo multi-horizonte para operar en la tarea de forecasting definida en esta memoria.
-\end{itemize}
 
-Adicionalmente, se cuenta con una implementación adaptada de CoFormer \cite{wei2023coformer}. Sin embargo, dicho modelo no fue incorporado a esta comparación porque su costo de entrenamiento resultó prohibitivamente alto para ejecutar el benchmark completo con múltiples semillas y 17 datasets. Su incorporación queda como extensión directa para trabajo futuro.
+STraTS y CoFormer se incluyen porque son dos referencias representativas para series irregulares sin imputación a una malla fija. No obstante, ambos fueron propuestos principalmente como codificadores de observaciones irregulares para tareas de clasificación, por lo que en este benchmark se usan adaptaciones orientadas a pronóstico multi-horizonte.
+
+\begin{itemize}
+	\item \textbf{STraTS adaptado}: conserva la representación por tripletas tiempo--variable--valor y el encoder con fusión por atención de STraTS. Para hacerlo comparable con la tarea de esta memoria, se añaden consultas futuras marcadas como objetivos, de modo que el modelo pueda entregar una predicción por timestamp objetivo. Esta adaptación no convierte a STraTS en un encoder--decoder: sigue siendo un codificador de tripletas con lectura sobre representaciones contextualizadas.
+	\item \textbf{CoFormer adaptado}: conserva la idea de puntos variable--tiempo y la separación entre atención intra-variable e inter-variable. En la configuración actual de datos reales, las corridas consolidadas son univariadas, por ello CoFormer opera como \textttbreak{CoFormer-Uni}, donde la atención inter-variable deja de aportar el mecanismo central para el que fue diseñado. Para pronóstico, la representación agregada de la historia se combina con la información temporal de cada objetivo futuro.
+\end{itemize}
 
 \subsection{Baselines simples}
+
 \begin{itemize}
-	\item \textbf{Persistencia}: predice el último valor observado de la historia para todos los horizontes futuros. No tiene parámetros entrenables y sirve como cota inferior del desempeño.
-	\item \textbf{Lineal}: modelo con una capa de encoding lineal sobre los últimos 50 valores de la historia, concatenada con el timestamp relativo del target. Tiene parámetros entrenables pero una capacidad limitada, y permite verificar si la complejidad del Transformer se justifica frente a una alternativa más sencilla.
+	\item \textbf{Persistencia}: predice el último valor observado de la historia para todos los horizontes futuros.
+	\item \textbf{Modelo lineal temporal}: usa los últimos 50 valores de la historia junto con tiempos relativos para predecir cada horizonte.
 \end{itemize}
 
-\subsection{Variantes de ablación}
+\subsection{Ablaciones}
+
 \begin{itemize}
-	\item \textbf{NoTimeEncoding}: Transformer idéntico al modelo propuesto pero donde el encoding temporal continuo se reemplaza por un positional encoding ordinal estándar (0, 1, 2, \ldots). Sirve para medir el aporte específico del encoding temporal continuo.
-	\item \textbf{NoTargetToken}: Transformer idéntico al modelo propuesto pero donde el embedding de flag historia/target se reemplaza por ceros. Sirve para medir el aporte del mecanismo de token objetivo.
+	\item \textbf{Sin encoding temporal continuo}: reemplaza los timestamps reales por un encoding posicional ordinal. Mide el aporte específico del tiempo continuo.
+	\item \textbf{Sin identificador de token objetivo}: elimina la señal aprendible que distingue historia y objetivo. Mide el aporte de explicitar el rol del token.
 \end{itemize}
 
 \section{Configuración de entrenamiento}
 \label{sec:configuracion-entrenamiento}
 
-Para evaluar el desempeño ante distintas demandas de capacidad, los modelos propuestos se instanciaron bajo las siguientes configuraciones paramétricas:
+Las configuraciones paramétricas principales son:
 \begin{itemize}
-	\item \textbf{Small}: $d_{\text{model}} = 64$, 2 capas, 4 cabezas, \emph{feed-forward} 128.
-	\item \textbf{Base}: $d_{\text{model}} = 128$, 4 capas, 4 cabezas, \emph{feed-forward} 256.
-	\item \textbf{Large}: $d_{\text{model}} = 256$, 6 capas, 8 cabezas, \emph{feed-forward} 512, con \emph{dropout} de 0.2.
+	\item \textbf{Pequeña}: $d_{\text{model}} = 64$, 2 capas, 4 cabezas, \emph{feed-forward} 128, \emph{dropout} 0.1.
+	\item \textbf{Base}: $d_{\text{model}} = 128$, 4 capas, 4 cabezas, \emph{feed-forward} 512, \emph{dropout} 0.15.
 \end{itemize}
 
-Los modelos Small y Base utilizan un \emph{dropout} de 0.1. Todos comparten una escala temporal base de 900 segundos.
-
-\hfill
-
-El entrenamiento utiliza el optimizador AdamW con regularización de pesos (\emph{weight decay}), un scheduler de \emph{learning rate} con calentamiento lineal seguido de decaimiento coseno (\emph{warmup + cosine decay}), y selección del mejor checkpoint según el RMSE de validación. La ejecución se realiza en GPU con precisión mixta automática.
-
-Para abordar las diferencias en la dinámica de convergencia entre modelos de distinto tamaño, se emplean configuraciones de entrenamiento diferenciadas por escala:
-\begin{itemize}
-	\item \textbf{Modelos pequeños} ($<$100K parámetros): \emph{learning rate} de $10^{-3}$, 30 épocas máximas, 2 épocas de calentamiento, \emph{weight decay} de $10^{-3}$.
-	\item \textbf{Modelos medianos} (100K--1M parámetros): \emph{learning rate} de $10^{-3}$, 25 épocas, 1 época de calentamiento, \emph{weight decay} de $10^{-3}$.
-	\item \textbf{Modelos grandes} ($>$1M parámetros): \emph{learning rate} de $2 \times 10^{-4}$, 60 épocas, 5 épocas de calentamiento, \emph{weight decay} de $10^{-2}$, $\beta_2 = 0.98$.
-\end{itemize}
-
-La reducción del \emph{learning rate} y el aumento del calentamiento para modelos grandes responden a la necesidad de estabilizar la convergencia en redes con más capas, donde tasas de aprendizaje elevadas en las primeras iteraciones pueden destruir la inicialización de los pesos y provocar que el modelo colapse a predicciones triviales.
-
-\hfill
-
-El modelo lineal usa una dimensión interna de 64 y toma los últimos 50 valores de la historia como entrada. El modelo de persistencia no requiere entrenamiento.
-
-\hfill
-
-Cada combinación (dataset, modelo) fue evaluada bajo tres semillas aleatorias (42, 84, 126), lo que proporciona estimaciones de varianza robustas e intervalos de confianza generalizables.
-
-\section{Estudio de Ablación Autoregresivo (Fine-Tuning)}
-\label{sec:ablacion-autoregresivo}
-
-La irregularidad estructural en el submuestreo de eventos demanda caracterizar fuertemente la influencia del enmascaramiento secuencial asimétrico en las regresiones continuas. Por consiguiente, los modelos de perfil \textbf{EncDec} finalizados se sometieron empíricamente a la inserción de una capa exploratoria de \emph{Transfer Learning} cimentada en un pronóstico Causal estricto (Fine-Tuning Autoregresivo).
-
-Iniciando por la validación principal, se congela el cuerpo bidireccional histórico (\emph{Encoder-Freezing Phase}) durante el $50\%$ primario de las subsecuentes épocas con el fin de contener divergencias bruscas y mitigar el sesgo clásico de \emph{Catastrophic Forgetting}. Traspuesto este filtro temporal, se reactiva con sutileza la propagación cruzada disminuyendo contundentemente al 10\% el \emph{Learning Rate} End-To-End.
-
-Esta dinámica regenerativa ha sido evaluada de manera cruzada empleando las tres metodologías siguientes de provisión para secuencias de \emph{Teacher Forcing}:
-\begin{itemize}
-    \item \textbf{Modo Contiguo (\texttt{Contiguous})}: inyecta sub-redes asincrónicas en un bloque ininterrumpido inalterado valiéndose del soporte subyacente general del \texttt{AutoregressiveSequenceBuilder}.
-    \item \textbf{Modo Aleatorio (\texttt{Random})}: dispersa los pronósticos y promueve sesgos de interpolación emulando el marco experimental general.
-    \item \textbf{Modo Mixto (\texttt{Mixed})}: estocástica purista, intercala ambos acercamientos dictando lógicas transitorias variables por lote que propulsan el desvío atípico temporal.
-\end{itemize}
+El entrenamiento usa AdamW, calentamiento lineal seguido de decaimiento coseno, selección del mejor checkpoint según RMSE de validación, precisión mixta automática y recorte de gradientes. La configuración se ajusta según el tamaño del modelo. En las variantes más inestables de \CTTransformer\ y del encoder--decoder optimizado se usa pérdida Huber, menor tasa de aprendizaje, más calentamiento y recorte de gradiente más estricto. El scheduler se detalla en el Anexo~\ref{anexo:optimizacion-scheduler}.
 
 \section{Métricas de evaluación}
 \label{sec:metricas-evaluacion-experimentos}
 
-La evaluación se realiza mediante cuatro métricas estándar de regresión:
+La evaluación se realiza mediante:
 \begin{itemize}
-	\item \textbf{MSE} (\emph{Mean Squared Error}), sensible a errores grandes y directamente alineada con la pérdida principal utilizada en entrenamiento.
-	\item \textbf{RMSE} (\emph{Root Mean Squared Error}), que expresa el error en las mismas unidades de la variable predicha.
-	\item \textbf{MAE} (\emph{Mean Absolute Error}), menos sensible a valores atípicos que el MSE.
-	\item \textbf{MAPE} (\emph{Mean Absolute Percentage Error}), útil como referencia relativa, aunque potencialmente inestable cuando los valores reales son pequeños o cercanos a cero.
+	\item \textbf{MSE}: métrica principal, sensible a errores grandes.
+	\item \textbf{RMSE}: raíz del MSE, expresada en la misma escala de la variable normalizada.
+	\item \textbf{MAE}: error absoluto medio, menos sensible a valores atípicos.
+	\item \textbf{MAPE}: error porcentual absoluto medio, se reporta con cautela porque puede ser inestable cuando el valor real está cerca de cero.
 \end{itemize}
 
-En esta memoria se prioriza la interpretación conjunta de MSE, RMSE y MAE. El MAPE se reporta igualmente, pero se discute con mayor cautela.
+El análisis principal prioriza MSE, RMSE y MAE.
 
-\section{Análisis estadístico}
+\section{Agregación y análisis estadístico}
 \label{sec:analisis-estadistico-experimentos}
 
-Para verificar que las diferencias observadas entre modelos no sean producto del azar, se aplican los siguientes métodos estadísticos:
-\begin{itemize}
-	\item \textbf{Media $\pm$ desviación estándar}: se promedian las semillas por dataset y luego se calcula media y desviación sobre los 17 datasets, lo cual entrega una medida de la dispersión del error a través de distintos escenarios de datos.
-	\item \textbf{Victorias por dataset}: se cuenta en cuántos de los 17 datasets cada modelo obtiene el menor error, lo que complementa la media agregada con información del ordenamiento por caso.
-	\item \textbf{Test de Wilcoxon de rango con signo}: test no paramétrico emparejado por dataset para determinar si la diferencia entre el modelo propuesto y cada baseline es estadísticamente significativa. Se aplica con hipótesis alternativa unilateral (Custom $<$ baseline).
-	\item \textbf{Intervalos de confianza bootstrap}: se generan 10\,000 muestras bootstrap de la media para construir intervalos de confianza del 95\% para cada modelo.
-\end{itemize}
+Para cada modelo, las tres semillas se promedian primero dentro de cada dataset. Luego se reporta la media y desviación estándar sobre los cinco promedios por dataset. Esta decisión evita tratar semillas como si fueran datasets independientes y permite que cada serie tenga el mismo peso en las tablas finales.
+
+\hfill
+
+También se reportan victorias por dataset, calculadas con MSE luego de promediar semillas. Dado que sólo hay cinco datasets, las pruebas estadísticas emparejadas tienen baja potencia. Por ello, las conclusiones del Capítulo~\ref{cap:resultados} se basan en magnitud, consistencia entre datasets y comparación de costos, no en una afirmación de significancia estadística fuerte.
 
 \section{Costo computacional}
 \label{sec:costo-computacional-experimentos}
 
-Para cada modelo se registra:
-\begin{itemize}
-	\item el número de parámetros entrenables,
-	\item el número total de parámetros,
-	\item el tiempo de entrenamiento en segundos (promedio sobre todas las corridas),
-	\item el número de épocas efectivamente ejecutadas antes de early stopping.
-\end{itemize}
-
-Estos datos permiten evaluar si las mejoras en error del modelo propuesto se obtienen a un costo computacional razonable respecto de las alternativas.
+Para cada corrida se registra el número de parámetros entrenables, el número total de parámetros, el tiempo de entrenamiento en segundos y el número de épocas ejecutadas antes de detener el entrenamiento. En las variantes con ajuste autoregresivo, el costo reportado en las tablas finales corresponde al entrenamiento base más el ajuste posterior, porque ambos pasos son necesarios para obtener el modelo evaluado.
 
 \section{Reproducibilidad}
 \label{sec:reproducibilidad}
 
-Todos los experimentos son reproducibles ejecutando:
+El benchmark se puede reanudar ejecutando:
 \begin{verbatim}
 python scripts/benchmark_final.py
 \end{verbatim}
-El script admite argumentos para seleccionar rangos de datasets (\textttbreak{--start-dataset}, \textttbreak{--end-dataset}), semillas (\textttbreak{--seeds}), y desactivar ablaciones (\textttbreak{--skip-ablation}) o baselines simples (\textttbreak{--skip-baselines}). Si el proceso se interrumpe, basta con volver a ejecutar el mismo comando para reanudar desde el último punto completado.
+
+El orquestador admite seleccionar rangos de datasets, semillas, subconjuntos de modelos y variantes opcionales como encoder--decoder y ajuste autoregresivo. Para reproducir el análisis final de esta memoria se debe filtrar el archivo de resultados a los datasets 1--5, semillas 42, 84 y 126, y modelos con las 15 corridas completas.
 
 \section{Resumen metodológico}
 \label{sec:resumen-metodologico}
 
-En síntesis, la campaña experimental de esta memoria consiste en un robusto benchmark de orquestación central iterando masivamente 17 bases de datos mundiales bajo 3 ecosistemas matriciales únicos dependientes por semilla. El flujo abarca subcapas dimensionales de \emph{Scaling} parametrizado e insta un riguroso test Causal Autoregresivo derivando 3 flujos combinatorios dictados estrictamente vía inyecciones del Teacher Forcing. Este despliegue iterativo provee la estructura indispensable que no solamente garantiza imparcialidad técnica en la evaluación estadística paramétrica a la luz de los antecedentes predominantes en Time-Series modernas, sino que provee una escalabilidad arquitectónica idónea a memorias rigurosas en el espectro civil y predictivo computacional.
+En síntesis, el diseño experimental compara la familia \CTTransformer, variantes encoder--decoder, baselines simples y adaptaciones de STraTS y CoFormer bajo un protocolo temporalmente justo: entrenamiento en pasado, validación intermedia y prueba futura. La fase experimental cerrada contiene cinco datasets, tres semillas por dataset y 24 modelos completos. El Capítulo~\ref{cap:resultados} utiliza ese subconjunto balanceado para declarar el mejor modelo observado y extraer conclusiones con el nivel de cautela que corresponde a una evaluación de cinco series reales.

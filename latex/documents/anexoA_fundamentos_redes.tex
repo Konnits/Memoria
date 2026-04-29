@@ -34,11 +34,10 @@ donde:
 \begin{itemize}
     \item $z$ es la combinación lineal de la entrada.
     \item $\phi$ es la \textbf{función de activación}, que introduce no linealidad.
-    \begin{quote}
-        \textbf{Nota:} Se utiliza una función de activación porque la combinación lineal de transformaciones lineales es, en sí misma, una transformación lineal; por lo tanto, la predicción estaría limitada a funciones objetivo lineales.
-    \end{quote}
     \item $y$ es la salida de la neurona.
 \end{itemize}
+
+La presencia de $\phi$ es indispensable porque la composición de transformaciones lineales sigue siendo lineal, sin una activación, la neurona quedaría limitada a representar relaciones objetivo de ese mismo tipo.
 
 \subsection{Interpretación geométrica}
 
@@ -81,10 +80,8 @@ Una \textbf{red neuronal feedforward} (o \textit{Multilayer Perceptron}, MLP) co
 \begin{align}
     h_1 &= \phi_1(W_1 x + b_1), \\
     h_2 &= \phi_2(W_2 h_1 + b_2), \\
-    \hat{y} &= W_3 h_2 + b_3,
+    \hat{y} &= W_3 h_2 + b_3, \qquad \hat{y} \in \R^{d_{\text{out}}},
 \end{align}
-
-\[\hat{y}_1 \quad \hat{y}_2 \quad \hat{y}_{_{\text{out}}}\]
 
 donde:
 \begin{itemize}
@@ -337,20 +334,20 @@ En palabras simples:
     \item La división por $\sqrt{\hat{v}_t}$ hace que los parámetros con gradientes consistentemente grandes tengan pasos de actualización más pequeños, y viceversa.
 \end{itemize}
 
-En esta memoria se utiliza Adam como optimizador por defecto para entrenar el modelo Transformer, tal como se especifica en los archivos de configuración de entrenamiento.
+En esta memoria se utiliza AdamW como optimizador principal para entrenar los modelos Transformer, tal como se especifica en los archivos de configuración de entrenamiento. AdamW conserva el carácter adaptativo de Adam, pero desacopla el decaimiento de pesos de la actualización basada en momentos.
 
-\section{Relación con el modelo Transformer de la memoria}
+\section{Relación con \CTTransformer}
 
 Aunque el Transformer parece, a primera vista, una arquitectura muy distinta a un MLP estándar, en el fondo reutiliza los mismos componentes básicos descritos en este anexo:
 
 \begin{itemize}
     \item Cada bloque de \textbf{atención multi-cabeza} está compuesto por proyecciones lineales (capas densas) que calculan las matrices de \textit{queries}, \textit{keys} y \textit{values}, seguidas de operaciones de atención y una proyección lineal de salida.
     \item El \textbf{bloque feed-forward} dentro de cada capa del Transformer es esencialmente un MLP de dos capas aplicado posición a posición, con una función de activación no lineal (por ejemplo, ReLU o GELU).
-    \item La red completa se entrena minimizando una función de pérdida (en este caso, típicamente MSE sobre las predicciones de la serie de tiempo) usando descenso de gradiente y un optimizador como Adam.
+    \item La red completa se entrena minimizando una función de pérdida (en este caso, típicamente MSE sobre las predicciones de la serie de tiempo) usando descenso de gradiente y un optimizador como Adam o AdamW.
     \item La \textbf{cabeza de regresión} sobre el token \textit{target} en el modelo de esta memoria es, nuevamente, una capa lineal (o una pequeña MLP) que transforma la representación latente del token en la predicción final.
 \end{itemize}
 
-Por lo tanto, comprender el funcionamiento de neuronas, funciones de activación, retropropagación y Adam es suficiente para entender el entrenamiento de toda la arquitectura propuesta, aunque los detalles de la atención y los encodings temporales se desarrollen en capítulos específicos del cuerpo principal.
+Por lo tanto, comprender el funcionamiento de neuronas, funciones de activación, retropropagación y optimizadores adaptativos como Adam o AdamW es suficiente para entender el entrenamiento de toda la arquitectura \CTTransformer, aunque los detalles de la atención, los encodings temporales y el scheduler usado en los experimentos se desarrollen en capítulos específicos y en el Anexo~\ref{anexo:optimizacion-scheduler}.
 
 \section{Resumen del anexo}
 
@@ -361,7 +358,7 @@ En este anexo se han presentado los fundamentos necesarios para comprender el en
     \item La definición de funciones de pérdida para problemas de regresión y el uso de regularización.
     \item El algoritmo de entrenamiento basado en descenso de gradiente, estimado mediante mini-batches, y el cálculo eficiente de gradientes mediante retropropagación.
     \item El rol de las funciones de activación y los problemas asociados al entrenamiento de redes profundas (gradientes que se desvanecen o explotan).
-    \item El algoritmo Adam como optimizador adaptativo ampliamente utilizado en la práctica.
+    \item El algoritmo Adam y su variante AdamW como optimizadores adaptativos ampliamente utilizados en la práctica.
 \end{itemize}
 
-Estos conceptos constituyen la base sobre la cual se construyen las arquitecturas específicas analizadas en la memoria, en particular el modelo Transformer adaptado a series de tiempo no equiespaciadas.
+Estos conceptos constituyen la base sobre la cual se construyen las arquitecturas específicas analizadas en la memoria, en particular \CTTransformer.

@@ -1,7 +1,7 @@
 \chapter{Series de tiempo y formulación del problema}
 \label{cap:series-tiempo}
 
-En este capítulo se presentan los conceptos básicos relacionados con series de tiempo y se formula con precisión el problema que aborda esta memoria. El objetivo es establecer un marco formal que permita entender qué se espera del modelo propuesto y cómo se construyen los ejemplos supervisados a partir de datos temporales con marcas de tiempo no equiespaciadas.
+En este capítulo se formaliza el problema que aborda esta memoria y se introducen los conceptos básicos necesarios para describirlo con precisión. El objetivo es establecer un marco formal que permita entender qué se espera de \CTTransformer\ y cómo se construyen los ejemplos supervisados a partir de datos temporales con marcas de tiempo no equiespaciadas.
 
 \hfill
 
@@ -64,6 +64,8 @@ En estos casos, los instantes de observación
     t_1, t_2, \dots, t_T
 \end{equation}
 ya no están separados por un intervalo constante, y la información contenida en las diferencias $t_{i+1} - t_i$ pasa a ser relevante. A este tipo de datos nos referiremos como \textbf{series de tiempo no equiespaciadas} o \textbf{con timestamps irregulares}.
+
+\hfill
 
 Trabajar directamente con timestamps reales permite, por ejemplo:
 \begin{itemize}
@@ -128,7 +130,7 @@ donde $k$ es el número de pasos hacia adelante.
 En esta memoria se adopta una formulación que combina ambas visiones:
 \begin{itemize}
     \item A nivel de construcción del dataset, se define un \textbf{offset de predicción} $o$ que indica cuántos índices después del \emph{anchor} se tomará el target en la secuencia original.
-    \item A nivel del modelo, además, se utilizan los timestamps reales $t_i$ para informar la distancia temporal efectiva entre la última observación de la historia y el instante objetivo.
+    \item A nivel del modelo, además, se utilizan los timestamps reales $t_i$ para construir tiempos relativos respecto del primer timestamp válido de la ventana. Así, tanto las observaciones históricas como el instante objetivo se expresan en una escala común, la distancia temporal entre la última observación de la historia y el objetivo queda disponible como diferencia entre sus tiempos relativos, no como un cambio del origen temporal.
 \end{itemize}
 
 Más concretamente, para cada ejemplo se elige un índice \emph{anchor} $a$ (que marca el final de la historia) y un offset de predicción $o \ge 0$. El índice del target será entonces:
@@ -149,9 +151,9 @@ Durante el entrenamiento se pueden considerar:
 
 \subsection{Ventanas deslizantes y tamaño de la historia}
 
-Sea $T$ el número total de observaciones disponibles. Dado un \textbf{tamaño máximo de historia} $H$ y un \textbf{stride} $s \ge 1$, se generan ejemplos recorriendo la serie con una ventana deslizante. De manera simplificada, los índices \emph{anchor} se pueden escribir como:
+Sea $T$ el número total de observaciones disponibles. Dado un \textbf{tamaño máximo de historia} $h_{\max}$ y un \textbf{stride} $s \ge 1$, se generan ejemplos recorriendo la serie con una ventana deslizante. De manera simplificada, los índices \emph{anchor} se pueden escribir como:
 \begin{equation}
-    a \in \{H, H+s, H+2s, \dots, a_{\max}\},
+    a \in \{h_{\max}, h_{\max}+s, h_{\max}+2s, \dots, a_{\max}\},
 \end{equation}
 donde $a_{\max}$ se elige de modo que exista al menos un offset de predicción válido (es decir, $a_{\max} + o_{\max} \le T-1$, con $o_{\max}$ el máximo offset considerado).
 
@@ -159,15 +161,15 @@ Para cada anchor $a$ se define una historia formada por las últimas $h$ observa
 \begin{equation}
     \mathcal{H}_a^{(h)} = \{(t_j, \mathbf{x}_j, \mathbf{y}_j)\}_{j=a-h}^{a-1},
 \end{equation}
-donde $h$ puede tomar valores entre una longitud mínima $H_{\min}$ y la longitud máxima $H$:
+donde $h$ puede tomar valores entre una longitud mínima $h_{\min}$ y la longitud máxima $h_{\max}$:
 \begin{equation}
-    H_{\min} \le h \le H.
+    h_{\min} \le h \le h_{\max}.
 \end{equation}
 
 En esta memoria se consideran dos configuraciones:
 \begin{itemize}
-    \item \textbf{Historia fija}: $H_{\min} = H$, por lo que todas las historias tienen la misma longitud.
-    \item \textbf{Historia variable}: $H_{\min} < H$, y para cada ejemplo se muestrea aleatoriamente una longitud $h \in [H_{\min}, H]$. De este modo, el modelo se entrena para manejar ventanas de contexto de tamaño variable, algo relevante cuando la densidad temporal de los datos cambia en el tiempo.
+    \item \textbf{Historia fija}: $h_{\min} = h_{\max}$, por lo que todas las historias tienen la misma longitud.
+    \item \textbf{Historia variable}: $h_{\min} < h_{\max}$, y para cada ejemplo se muestrea aleatoriamente una longitud $h \in [h_{\min}, h_{\max}]$. De este modo, el modelo se entrena para manejar ventanas de contexto de tamaño variable, algo relevante cuando la densidad temporal de los datos cambia en el tiempo.
 \end{itemize}
 
 \subsection{Definición de la entrada y la salida de cada ejemplo}
@@ -198,7 +200,7 @@ En términos más operativos, es útil separar:
     \]
 \end{itemize}
 
-El modelo propuesto en esta memoria recibirá como entrada una secuencia construida a partir de la historia y del timestamp objetivo (mediante la adición de un token especial), y deberá producir una estimación $\widehat{\mathbf{y}}^{(\text{target})}$ de la salida verdadera. Los detalles de esta representación se desarrollan en el capítulo dedicado al modelo Transformer.
+La familia \CTTransformer\ recibirá como entrada una representación construida a partir de la historia y del timestamp objetivo. En la arquitectura base esto se realiza mediante la adición de tokens objetivo a la misma secuencia de entrada, en la variante encoder--decoder, esos tokens se procesan en el decoder y consultan la historia codificada por el encoder. En ambos casos, el modelo deberá producir una estimación $\widehat{\mathbf{y}}^{(\text{target})}$ de la salida verdadera. Los detalles de esta representación se desarrollan en el capítulo dedicado al modelo Transformer.
 
 \section{Formulación como problema de aprendizaje supervisado}
 
@@ -244,4 +246,4 @@ En este capítulo se han establecido los elementos necesarios para describir con
     \item Se presentó la función objetivo de entrenamiento y el esquema de partición temporal en conjuntos de entrenamiento, validación y prueba.
 \end{itemize}
 
-Sobre este marco se construirá, en los capítulos siguientes, la arquitectura Transformer propuesta para manejar timestamps no equiespaciados y realizar predicciones a distintos horizontes, junto con los experimentos que evalúan su desempeño.
+Sobre este marco se construirá, en los capítulos siguientes, la arquitectura \CTTransformer\ para manejar timestamps no equiespaciados y realizar predicciones a distintos horizontes, junto con los experimentos que evalúan su desempeño.

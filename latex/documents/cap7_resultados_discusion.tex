@@ -1,214 +1,215 @@
 \chapter{Resultados y discusión}
 \label{cap:resultados}
 
-En este capítulo se presentan los resultados del benchmark final sobre los 17 datasets reales, evaluados en el conjunto de test retenido con múltiples semillas. Los resultados incluyen la comparación entre el modelo propuesto y todos los baselines, estudios de ablación y análisis de costo computacional.
+Este capítulo presenta los resultados finales de la fase experimental definida en el Capítulo~\ref{cap:experimentos}. El análisis usa el subconjunto balanceado del archivo \textttbreak{benchmark\_final.csv}: datasets 1--5, semillas 42, 84 y 126, y sólo modelos con las 15 corridas completas. En total, el subconjunto final contiene 360 corridas, correspondientes a 24 modelos.
 
-% =====================================================================
-% NOTA: Las tablas de este capítulo contienen valores de referencia
-% basados en los resultados preliminares. Una vez completado el benchmark
-% final (benchmark_final.py), estos valores deben actualizarse con los
-% números definitivos del archivo benchmark_final.csv.
-% =====================================================================
+\hfill
 
-\section{Resultados generales del benchmark}
-\label{sec:resultados-generales}
+Las tablas reportan media $\pm$ desviación estándar sobre cinco valores, uno por dataset. Cada valor por dataset se obtiene promediando primero las tres semillas. Valores menores indican mejor desempeño. La métrica principal es MSE; RMSE y MAE se usan como métricas complementarias.
 
-La Tabla~\ref{tab:resultados-generales} presenta el resumen de métricas sobre test (media $\pm$ desviación estándar) para todos los modelos evaluados, promediando primero las semillas por dataset y luego calculando la estadística sobre los 17 datasets.
+\section{Cobertura final del benchmark}
+\label{sec:cobertura-benchmark-final}
+
+La Tabla~\ref{tab:cobertura-final} resume la cobertura utilizada para el análisis final. El archivo de resultados contiene algunas filas adicionales de corridas parciales, pero no se usan para las conclusiones porque no forman parte del conjunto balanceado.
 
 \begin{table}[H]
 	\centering
-	\caption{Métricas de test promediadas sobre 17 datasets reales (media $\pm$ std). Resultados con 3 semillas por combinación (dataset, modelo). Valores menores son mejores.}
-	\label{tab:resultados-generales}
-	\begin{tabular}{lccc}
+	\caption{Cobertura final usada en el análisis.}
+	\label{tab:cobertura-final}
+	\begin{tabular}{lcc}
 		\toprule
-		Modelo & MSE & RMSE & MAE \\
+		Grupo & Modelos completos & Corridas completas \\
 		\midrule
-		Custom (propuesto) & \textbf{---} & \textbf{---} & \textbf{---} \\
-		STraTS adaptado & --- & --- & --- \\
-		Linear & --- & --- & --- \\
-		Persistence & --- & --- & --- \\
-		NoTimeEncoding (ablación) & --- & --- & --- \\
-		NoTargetToken (ablación) & --- & --- & --- \\
+		Variantes \CTTransformer\ encoder & 10 & 150 \\
+		Variantes encoder--decoder optimizadas & 8 & 120 \\
+		Baselines de estado del arte adaptados & 2 & 30 \\
+		Baselines simples & 2 & 30 \\
+		Ablaciones & 2 & 30 \\
+		\midrule
+		Total & 24 & 360 \\
 		\bottomrule
 	\end{tabular}
 \end{table}
 
-% TODO: Llenar con valores de experiments/benchmark_final/summary_table.csv
+\section{Resultado principal}
+\label{sec:resultado-principal-final}
+
+El mejor desempeño observado en la evaluación final corresponde a \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}. Esta variante obtiene el menor MSE, RMSE y MAE, y gana en los 5 de 5 datasets al comparar promedios por dataset.
+
+\hfill
+
+Arquitectónicamente, el modelo ganador es un encoder--decoder pequeño: $d_{\text{model}}=64$, 2 capas de encoder, 4 cabezas de atención, \emph{feed-forward} de dimensión 128 y \emph{dropout} 0.1. A diferencia del encoder puro \CTTransformer, procesa la historia en un encoder y los tokens objetivo en un decoder liviano de una capa con atención cruzada hacia la historia. La sigla MT8 indica que se entrenó con ocho tokens objetivo. El sufijo \textttbreak{FT\_AR\_Contiguous} indica un ajuste posterior autoregresivo con máscara causal y objetivos futuros contiguos.
+
+\hfill
+
+La Tabla~\ref{tab:resultados-finales-principales} compara el modelo ganador con las variantes y baselines más relevantes. El tiempo reportado para modelos con ajuste autoregresivo incluye tanto el entrenamiento base como el ajuste posterior.
+
+\begin{table}[H]
+	\centering
+	\caption{Resultados finales de modelos representativos.}
+	\label{tab:resultados-finales-principales}
+	\scriptsize
+	\resizebox{\textwidth}{!}{%
+	\begin{tabular}{lcccccc}
+		\toprule
+		Modelo & MSE & RMSE & MAE & Parámetros & Tiempo medio & Victorias \\
+		\midrule
+		EncDec-Opt pequeño MT8 + AR contiguo & \textbf{0.1979 $\pm$ 0.0531} & \textbf{0.4417 $\pm$ 0.0589} & \textbf{0.2193 $\pm$ 0.0471} & 117.8K & 0.46 h & 5/5 \\
+		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & 0.2807 $\pm$ 0.0709 & 0.5265 $\pm$ 0.0659 & 0.2906 $\pm$ 0.0754 & 67.8K & 0.74 h & 0/5 \\
+		\CTTransformerSmall & 0.2817 $\pm$ 0.0704 & 0.5275 $\pm$ 0.0654 & 0.2935 $\pm$ 0.0796 & 67.4K & 0.69 h & 0/5 \\
+		\CTTransformerBase & 0.2906 $\pm$ 0.0656 & 0.5363 $\pm$ 0.0600 & 0.2859 $\pm$ 0.0751 & 636.2K & 0.92 h & 0/5 \\
+		Modelo lineal temporal & 0.2919 $\pm$ 0.0704 & 0.5372 $\pm$ 0.0642 & 0.3286 $\pm$ 0.0806 & 10.8K & 0.69 h & 0/5 \\
+		STraTS adaptado & 0.3274 $\pm$ 0.0992 & 0.5668 $\pm$ 0.0876 & 0.3205 $\pm$ 0.0859 & 229.2K & 0.63 h & 0/5 \\
+		Persistencia & 0.4201 $\pm$ 0.1506 & 0.6365 $\pm$ 0.1076 & 0.3435 $\pm$ 0.1209 & 0 efectivos & 0.00 h & 0/5 \\
+		CoFormer univariado & 0.5663 $\pm$ 0.0883 & 0.7506 $\pm$ 0.0582 & 0.4464 $\pm$ 0.1100 & 693.4K & 0.22 h & 0/5 \\
+		\bottomrule
+	\end{tabular}}
+\end{table}
+
+La reducción de MSE del modelo ganador es de 29.7\% frente a \CTTransformerSmall, 31.9\% frente a \CTTransformerBase, 32.2\% frente al modelo lineal temporal, 39.5\% frente a STraTS adaptado y 52.9\% frente a persistencia. Además, la ventaja no se concentra en un solo dataset: el modelo ganador obtiene el menor MSE promedio en cada uno de los cinco datasets.
 
 \section{Comparación contra baselines}
-\label{sec:comparacion-baselines}
+\label{sec:comparacion-baselines-final}
 
-\subsection{Modelo propuesto versus STraTS}
+La comparación contra persistencia muestra que todos los modelos neuronales principales aprenden más que repetir el último valor observado. El resultado más fuerte lo entrega el encoder--decoder autoregresivo: reduce el MSE medio desde 0.4201 hasta 0.1979.
 
-La comparación emparejada por dataset entre el modelo propuesto y STraTS se resume a continuación:
+\hfill
 
-\begin{itemize}
-	\item \textbf{Victorias}: el modelo propuesto obtiene menor MSE en --- de los 17 datasets.
-	\item \textbf{Mejora porcentual media}: ---\% de reducción en MSE respecto de STraTS.
-	\item \textbf{Test de Wilcoxon}: $p = $ ---, lo que indica una diferencia estadísticamente significativa a nivel 0.05.
-\end{itemize}
+La comparación contra el modelo lineal temporal es más informativa. El lineal alcanza MSE 0.2919, muy cerca de \CTTransformerBase\ y de algunas variantes encoder puras. Esto confirma que el benchmark no es trivial: una parametrización simple con historia reciente y tiempos relativos ya captura parte importante de la dinámica. Aun así, el modelo ganador queda claramente por debajo de ese baseline.
 
-% TODO: Llenar con valores de experiments/benchmark_final/pairwise_comparisons.csv
+\hfill
 
-\subsection{Modelo propuesto versus baselines simples}
+STraTS adaptado obtiene MSE 0.3274, competitivo pero por debajo de las mejores variantes \CTTransformer. CoFormer univariado queda rezagado con MSE 0.5663. Esta diferencia debe interpretarse con cuidado: CoFormer fue diseñado para explotar relaciones entre múltiples variables asincrónicas, mientras que la evaluación final consolidada es univariada. En este contexto pierde buena parte de su sesgo inductivo original.
 
-Para verificar que la mejora del modelo propuesto no se debe simplemente a la capacidad de un modelo complejo frente a una referencia trivial, se compara también contra los baselines simples:
+\section{Variantes encoder--decoder}
+\label{sec:variantes-encoder-decoder-final}
 
-\begin{itemize}
-	\item \textbf{Versus Persistencia}: el modelo propuesto reduce el MSE en ---\% respecto de la predicción por último valor. Este resultado confirma que la arquitectura está aprendiendo patrones temporales más allá de la repetición del valor más reciente.
-	\item \textbf{Versus Linear}: la reducción del MSE frente al modelo lineal es de ---\%, lo que indica que la estructura no lineal del Transformer aporta capacidad predictiva adicional.
-\end{itemize}
-
-% TODO: Llenar con valores del benchmark final
-
-\subsection{Consistencia por dataset}
-
-La Tabla~\ref{tab:victorias-por-modelo} muestra cuántos de los 17 datasets gana cada modelo (MSE mínimo, promediando semillas):
+La Tabla~\ref{tab:encdec-final} muestra que el ajuste autoregresivo es el cambio arquitectónico más decisivo de la evaluación. La variante encoder--decoder pequeña sin ajuste autoregresivo obtiene MSE 0.2945, similar a \CTTransformerBase. Después del ajuste autoregresivo contiguo, el MSE baja a 0.1979, una reducción aproximada de 33\%.
 
 \begin{table}[H]
 	\centering
-	\caption{Número de datasets donde cada modelo obtiene el menor MSE sobre test.}
-	\label{tab:victorias-por-modelo}
-	\begin{tabular}{lc}
+	\caption{Resultados finales de variantes encoder--decoder optimizadas.}
+	\label{tab:encdec-final}
+	\scriptsize
+	\resizebox{\textwidth}{!}{%
+	\begin{tabular}{lccccc}
 		\toprule
-		Modelo & Datasets ganados (de 17) \\
+		Modelo & MSE & RMSE & MAE & Parámetros & Tiempo medio \\
 		\midrule
-		Custom (propuesto) & --- \\
-		STraTS adaptado & --- \\
-		Linear & --- \\
-		Persistence & --- \\
+		EncDec-Opt-Small-MT8 & 0.2945 $\pm$ 0.0721 & 0.5395 $\pm$ 0.0653 & 0.2859 $\pm$ 0.0715 & 117.8K & 0.30 h \\
+		EncDec-Opt-Small-MT8 + AR contiguo & \textbf{0.1979 $\pm$ 0.0531} & \textbf{0.4417 $\pm$ 0.0589} & \textbf{0.2193 $\pm$ 0.0471} & 117.8K & 0.46 h \\
+		EncDec-Opt-Small-MT8 + AR mixto & 0.2043 $\pm$ 0.0519 & 0.4489 $\pm$ 0.0574 & 0.2248 $\pm$ 0.0487 & 117.8K & 0.47 h \\
+		EncDec-Opt-Small-MT8 + AR aleatorio & 0.2206 $\pm$ 0.0600 & 0.4659 $\pm$ 0.0640 & 0.2369 $\pm$ 0.0568 & 117.8K & 0.47 h \\
+		EncDec-Opt-MT8 & 0.3028 $\pm$ 0.0752 & 0.5470 $\pm$ 0.0671 & 0.2909 $\pm$ 0.0740 & 1.06M & 0.53 h \\
+		EncDec-Opt-MT8 + AR contiguo & 0.2102 $\pm$ 0.0627 & 0.4544 $\pm$ 0.0671 & 0.2240 $\pm$ 0.0502 & 1.06M & 0.76 h \\
+		EncDec-Opt-MT8 + AR mixto & 0.2172 $\pm$ 0.0629 & 0.4619 $\pm$ 0.0669 & 0.2285 $\pm$ 0.0545 & 1.06M & 0.79 h \\
+		EncDec-Opt-MT8 + AR aleatorio & 0.2424 $\pm$ 0.0798 & 0.4866 $\pm$ 0.0796 & 0.2430 $\pm$ 0.0637 & 1.06M & 0.79 h \\
 		\bottomrule
-	\end{tabular}
+	\end{tabular}}
 \end{table}
 
-% TODO: Llenar con conteo de victorias del benchmark final
+El patrón es consistente: las versiones autoregresivas superan a sus respectivas bases, el modo contiguo es el mejor entre los tres modos de ajuste y el tamaño pequeño domina al tamaño base. Esto sugiere que, para estos cinco datasets univariados, el beneficio principal no proviene de aumentar capacidad, sino de alinear el entrenamiento con la generación secuencial de horizontes futuros.
 
-\section{Estudios de ablación}
-\label{sec:estudios-ablacion}
+\hfill
 
-Para aislar el aporte de cada componente clave de la arquitectura propuesta, se entrenan dos variantes controladas que eliminan un componente a la vez:
+Hay una cautela metodológica importante. Las variantes autoregresivas se evalúan con generación sobre ocho objetivos contiguos, mientras que los modelos no autoregresivos se evalúan con hasta cuatro objetivos dentro del rango de offsets configurado. Por ello, el resultado permite declarar al encoder--decoder pequeño con AR contiguo como el mejor sistema observado en esta evaluación, pero no aísla completamente si la mejora proviene del decoder, del ajuste autoregresivo, del protocolo de objetivos o de la combinación de estos factores.
 
-\begin{itemize}
-	\item \textbf{NoTimeEncoding}: reemplaza el encoding temporal continuo por un positional encoding ordinal estándar. Si este modelo empeora significativamente respecto del Custom, se confirma que el encoding temporal continuo aporta información útil.
-	\item \textbf{NoTargetToken}: reemplaza el embedding de flag historia/target por ceros. Si este modelo empeora, se confirma que el mecanismo de token objetivo contribuye a la calidad de la predicción.
-\end{itemize}
+\section{Variantes \CTTransformer}
+\label{sec:variantes-ct-final}
 
-La Tabla~\ref{tab:ablacion-resultados} resume los resultados de ablación:
+Dentro de las variantes encoder puras de \CTTransformer, la señal principal es que los modelos pequeños son suficientes y, en MSE, levemente mejores que las versiones base. La Tabla~\ref{tab:variantes-ct-final} resume las variantes más relevantes.
 
 \begin{table}[H]
 	\centering
-	\caption{Resultados de ablación (MSE sobre test, media $\pm$ std sobre 17 datasets, 3 semillas).}
-	\label{tab:ablacion-resultados}
-	\begin{tabular}{lcc}
+	\caption{Resultados finales de variantes encoder de \CTTransformer.}
+	\label{tab:variantes-ct-final}
+	\scriptsize
+	\resizebox{\textwidth}{!}{%
+	\begin{tabular}{lcccc}
 		\toprule
-		Modelo & MSE (media $\pm$ std) & $\Delta$ MSE vs Custom (\%) \\
+		Modelo & MSE & RMSE & MAE & Parámetros \\
 		\midrule
-		Custom (completo) & --- & (referencia) \\
-		NoTimeEncoding & --- & +---\% \\
-		NoTargetToken & --- & +---\% \\
+		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & \textbf{0.2807 $\pm$ 0.0709} & \textbf{0.5265 $\pm$ 0.0659} & 0.2906 $\pm$ 0.0754 & 67.8K \\
+		\CTTransformer\ pequeño + sesgo temporal & 0.2808 $\pm$ 0.0703 & 0.5266 $\pm$ 0.0654 & 0.2915 $\pm$ 0.0749 & 67.6K \\
+		\CTTransformer\ pequeño + resumen atencional & 0.2817 $\pm$ 0.0704 & 0.5275 $\pm$ 0.0654 & 0.2934 $\pm$ 0.0763 & 82.1K \\
+		\CTTransformerSmall & 0.2817 $\pm$ 0.0704 & 0.5275 $\pm$ 0.0654 & 0.2935 $\pm$ 0.0796 & 67.4K \\
+		\CTTransformer\ pequeño + Time2Vec & 0.2824 $\pm$ 0.0702 & 0.5282 $\pm$ 0.0651 & 0.2938 $\pm$ 0.0775 & 67.8K \\
+		\CTTransformer\ base + Time2Vec + sesgo temporal & 0.2851 $\pm$ 0.0687 & 0.5309 $\pm$ 0.0634 & \textbf{0.2756 $\pm$ 0.0702} & 794.9K \\
+		\CTTransformer\ base + sesgo temporal & 0.2846 $\pm$ 0.0706 & 0.5302 $\pm$ 0.0650 & 0.2777 $\pm$ 0.0710 & 794.4K \\
+		\CTTransformer\ base + Time2Vec & 0.2867 $\pm$ 0.0704 & 0.5323 $\pm$ 0.0648 & 0.2773 $\pm$ 0.0764 & 794.9K \\
+		\CTTransformer\ base + resumen atencional & 0.2869 $\pm$ 0.0707 & 0.5324 $\pm$ 0.0651 & 0.2799 $\pm$ 0.0765 & 852.1K \\
+		\CTTransformerBase & 0.2906 $\pm$ 0.0656 & 0.5363 $\pm$ 0.0600 & 0.2859 $\pm$ 0.0751 & 636.2K \\
 		\bottomrule
-	\end{tabular}
+	\end{tabular}}
 \end{table}
 
-% TODO: Llenar con valores del benchmark final
+La mejor variante encoder pura por MSE es \CTTransformer\ pequeño con Time2Vec y sesgo temporal, pero su ventaja frente a \CTTransformerSmall\ es sólo de 0.4\% en MSE. Por lo tanto, la conclusión razonable no es que Time2Vec más sesgo temporal sea decisivo, sino que la familia pequeña de \CTTransformer\ es robusta y difícil de distinguir con sólo cinco datasets.
 
-Si ambas variantes de ablación presentan un MSE significativamente mayor que el modelo completo, esto constituye evidencia directa de que tanto el encoding temporal continuo como el token objetivo son componentes que aportan de forma individual al desempeño, y no son redundantes.
+\hfill
 
-\section{Análisis de costo computacional}
-\label{sec:analisis-costo}
+En MAE, las variantes base con Time2Vec o sesgo temporal mejoran al modelo pequeño. Esto sugiere que mayor capacidad y representaciones temporales más flexibles pueden reducir errores absolutos típicos, aunque no necesariamente los errores cuadráticos grandes que dominan el MSE.
 
-La Tabla~\ref{tab:costo-computacional} presenta el costo promedio de cada modelo:
+\section{Ablaciones}
+\label{sec:estudios-ablacion-final}
+
+La Tabla~\ref{tab:ablaciones-final} muestra las dos ablaciones principales. La eliminación del identificador historia--objetivo degrada el desempeño: el MSE sube desde 0.2906 hasta 0.3028, una pérdida cercana a 4.0\%. Esta señal respalda la decisión de marcar explícitamente qué tokens son observaciones pasadas y cuáles son consultas futuras.
 
 \begin{table}[H]
 	\centering
-	\caption{Costo computacional promedio por modelo sobre todas las corridas del benchmark.}
-	\label{tab:costo-computacional}
-	\begin{tabular}{lccc}
+	\caption{Ablaciones finales respecto de \CTTransformerBase.}
+	\label{tab:ablaciones-final}
+	\scriptsize
+	\resizebox{\textwidth}{!}{%
+	\begin{tabular}{lcccc}
 		\toprule
-		Modelo & Parámetros entrenables & Tiempo (seg) & Épocas \\
+		Modelo & MSE & RMSE & MAE & Parámetros \\
 		\midrule
-		Custom & --- & --- & --- \\
-		STraTS adaptado & --- & --- & --- \\
-		Linear & --- & --- & --- \\
-		Persistence & --- & 0 & 0 \\
-		NoTimeEncoding & --- & --- & --- \\
-		NoTargetToken & --- & --- & --- \\
+		\CTTransformerBase & 0.2906 $\pm$ 0.0656 & 0.5363 $\pm$ 0.0600 & \textbf{0.2859 $\pm$ 0.0751} & 636.2K \\
+		Sin encoding temporal continuo & \textbf{0.2903 $\pm$ 0.0718} & \textbf{0.5356 $\pm$ 0.0653} & 0.2957 $\pm$ 0.0734 & 583.4K \\
+		Sin identificador de token objetivo & 0.3028 $\pm$ 0.0573 & 0.5478 $\pm$ 0.0516 & 0.3027 $\pm$ 0.0639 & 600.7K \\
+		\CTTransformerSmall & 0.2817 $\pm$ 0.0704 & 0.5275 $\pm$ 0.0654 & 0.2935 $\pm$ 0.0796 & 67.4K \\
 		\bottomrule
-	\end{tabular}
+	\end{tabular}}
 \end{table}
 
-% TODO: Llenar con valores de experiments/benchmark_final/cost_summary.csv
+El efecto del encoding temporal continuo es menos claro. La ablación sin tiempo continuo queda prácticamente empatada con \CTTransformerBase\ en MSE y RMSE, aunque empeora en MAE. En estos cinco datasets univariados, no hay evidencia suficiente para afirmar que el encoding temporal continuo sea por sí solo el componente decisivo. La evidencia sí favorece el uso del identificador de token objetivo.
 
-Este análisis es relevante porque permite evaluar si el modelo propuesto ofrece una relación favorable entre mejora en error y costo de entrenamiento. Si el modelo Custom obtiene los mejores resultados con un número de parámetros comparable o inferior al de STraTS, la ventaja es doble: mejor desempeño con eficiencia similar.
+\hfill
 
-\section{Significancia estadística}
-\label{sec:significancia-estadistica}
+La comparación con \CTTransformerSmall\ también muestra que reducir capacidad mejora el MSE frente al modelo base. Esto sugiere que las series evaluadas no requieren necesariamente un encoder de mayor tamaño, o que la regularización implícita de la versión pequeña resulta favorable.
 
-Para verificar que las diferencias observadas no son producto del azar ni de una corrida favorable, se aplican las siguientes pruebas:
+\section{Costo computacional}
+\label{sec:analisis-costo-final}
 
-\subsection{Test de Wilcoxon de rango con signo}
+El resultado de costo es favorable para el modelo ganador. Aunque requiere dos etapas, entrenamiento base y ajuste autoregresivo, su tiempo medio total es 0.46 horas por corrida y usa 117.8K parámetros. Es más costoso que persistencia, pero más barato que \CTTransformerSmall\ en el registro final y bastante más pequeño que \CTTransformerBase.
 
-Se construyen pares (MSE Custom, MSE baseline) por dataset (promediando semillas) y se aplica el test de Wilcoxon con hipótesis alternativa unilateral: $H_1$: MSE Custom $<$ MSE baseline.
+\hfill
 
-\begin{table}[H]
-	\centering
-	\caption{Tests de Wilcoxon emparejados por dataset (17 pares, métricas sobre test).}
-	\label{tab:wilcoxon-tests}
-	\begin{tabular}{lcc}
-		\toprule
-		Comparación & Estadístico $W$ & $p$-valor \\
-		\midrule
-		Custom vs STraTS & --- & --- \\
-		Custom vs Linear & --- & --- \\
-		Custom vs Persistence & --- & --- \\
-		Custom vs NoTimeEncoding & --- & --- \\
-		Custom vs NoTargetToken & --- & --- \\
-		\bottomrule
-	\end{tabular}
-\end{table}
+El aumento de tamaño no entrega una mejora clara. \CTTransformerBase\ usa 636.2K parámetros y obtiene MSE 0.2906, mientras que \CTTransformerSmall\ usa 67.4K y obtiene MSE 0.2817. Algo similar ocurre en encoder--decoder: la variante pequeña con ajuste AR contiguo supera a la variante base con el mismo ajuste, pese a tener aproximadamente una novena parte de los parámetros.
 
-% TODO: Llenar con valores de experiments/benchmark_final/pairwise_comparisons.csv
+\section{Significancia estadística y alcance}
+\label{sec:significancia-estadistica-final}
 
-Un $p$-valor menor a 0.05 indica que la diferencia es estadísticamente significativa al nivel convencional.
+Con cinco datasets, una prueba emparejada tiene baja potencia. Incluso una ventaja en 5 de 5 datasets no basta para sostener una afirmación estadística fuerte bajo criterios convencionales de significancia bilateral. Por esta razón, las conclusiones se formulan como evidencia empírica final de esta evaluación, no como demostración universal.
 
-\subsection{Intervalos de confianza bootstrap}
+\hfill
 
-Adicionalmente, se calculan intervalos de confianza del 95\% para la media de MSE de cada modelo mediante bootstrap (10\,000 remuestras). Estos intervalos complementan el test de Wilcoxon con una estimación visual de la incertidumbre:
+Dicho esto, la señal del modelo ganador es consistente y de magnitud relevante: gana en todos los datasets y reduce el MSE de forma amplia frente a \CTTransformerSmall, \CTTransformerBase, STraTS, persistencia y el modelo lineal. Esto permite declarar un mejor modelo para el benchmark cerrado, con la cautela de que futuras evaluaciones deberían confirmar la conclusión en más datasets y bajo protocolos de horizonte completamente homogéneos.
 
-\begin{itemize}
-	\item Custom: --- [---, ---]
-	\item STraTS: --- [---, ---]
-	\item Linear: --- [---, ---]
-	\item Persistence: --- [---, ---]
-\end{itemize}
+\section{Discusión sobre MAPE}
+\label{sec:discusion-mape-final}
 
-% TODO: Llenar con valores del benchmark final
-
-Si los intervalos de confianza del modelo Custom no se solapan con los de los baselines, esto proporciona evidencia visual adicional de la separación entre los modelos.
-
-\section{Interpretación general de los resultados}
-\label{sec:interpretacion-resultados}
-
-Los resultados del benchmark permiten extraer las siguientes conclusiones empíricas:
-
-\begin{enumerate}
-	\item \textbf{El modelo propuesto supera consistentemente a todos los baselines} en las métricas principales (MSE, RMSE, MAE) sobre el conjunto de test, con diferencias que son estadísticamente significativas.
-	\item \textbf{La mejora no es trivial}: ganar tanto a modelos especializados en irregularidad (STraTS) como a baselines simples (persistencia, lineal) confirma que el modelo no sólo es complejo, sino que su complejidad está bien orientada.
-	\item \textbf{Los estudios de ablación confirman que cada componente aporta}: tanto el encoding temporal continuo como el token objetivo contribuyen individualmente al desempeño final.
-	\item \textbf{El costo computacional es razonable}: el modelo propuesto obtiene los mejores resultados sin requerir significativamente más parámetros ni tiempo de entrenamiento que STraTS.
-\end{enumerate}
-
-\section{Discusión sobre MAPE y estabilidad de las métricas}
-\label{sec:discusion-mape}
-
-El MAPE presenta un comportamiento menos uniforme que MSE, RMSE y MAE. Esto es esperable en series reales donde la variable objetivo puede tomar valores cercanos a cero, lo cual infla artificialmente el error porcentual. Por esta razón, en el análisis principal de esta memoria se da mayor peso a las métricas absolutas y cuadráticas.
+El MAPE presenta alta variabilidad en las corridas actuales y, en algunas variantes autoregresivas, se registra en columnas auxiliares separadas. Esto es esperable cuando la variable objetivo puede acercarse a cero, porque pequeños denominadores inflan artificialmente el error porcentual. Por ello, el análisis principal se basa en MSE, RMSE y MAE.
 
 \section{Síntesis del capítulo}
-\label{sec:sintesis-resultados}
+\label{sec:sintesis-resultados-final}
 
-En conjunto, los resultados permiten extraer tres conclusiones principales:
+Los resultados finales permiten resumir la evaluación en cinco puntos:
+
 \begin{enumerate}
-	\item El modelo propuesto supera de forma consistente y estadísticamente significativa a todos los baselines evaluados en los 17 datasets reales, validado sobre el conjunto de test.
-	\item Los estudios de ablación confirman que el encoding temporal continuo y el token objetivo son componentes que aportan individualmente al desempeño.
-	\item El modelo propuesto logra estos resultados con un costo computacional comparable al de las alternativas, lo que fortalece su propuesta de valor como solución práctica.
+	\item El mejor modelo observado es \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}: encoder--decoder pequeño, entrenado con ocho objetivos y ajustado autoregresivamente sobre objetivos contiguos.
+	\item Este modelo gana en los 5 datasets y obtiene MSE 0.1979, RMSE 0.4417 y MAE 0.2193.
+	\item Dentro de los encoders puros, las variantes pequeñas de \CTTransformer\ son las más competitivas; la mejor por MSE es la versión pequeña con Time2Vec y sesgo temporal, aunque queda prácticamente empatada con \CTTransformerSmall.
+	\item Las ablaciones indican que el identificador de token objetivo aporta una señal útil; el efecto aislado del encoding temporal continuo no queda demostrado en este subconjunto.
+	\item Aumentar capacidad no mejora el MSE en esta evaluación. Los modelos pequeños entregan la mejor relación entre error, parámetros y tiempo.
 \end{enumerate}

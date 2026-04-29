@@ -1,74 +1,73 @@
 \chapter{Conclusiones y trabajo futuro}
 \label{cap:conclusiones}
 
-La pregunta central que motivó esta memoria fue si era posible adaptar la arquitectura \Transformer\ para trabajar de manera directa con series de tiempo no equiespaciadas, incorporando los timestamps reales sin depender de una regularización previa sobre una malla temporal fija. A partir del desarrollo teórico, de la implementación realizada y de los resultados experimentales obtenidos, la respuesta que entrega esta memoria es afirmativa.
+La pregunta central de esta memoria es si es posible adaptar arquitecturas \Transformer\ para trabajar directamente con series de tiempo no equiespaciadas, incorporando timestamps reales sin regularizar previamente la serie sobre una malla temporal fija. La respuesta, dentro del alcance de esta evaluación experimental, es afirmativa.
 
 \hfill
 
-El modelo propuesto combina una estructura conceptualmente simple ---embedding de valores, encoding temporal continuo, embedding de token objetivo, encoder \Transformer\ y cabeza de regresión--- con un mecanismo de construcción de secuencias que permite representar explícitamente el instante de predicción. Esta combinación resultó suficiente para entrenar un modelo funcional y superior a los baselines evaluados sobre datos reales con timestamps irregulares.
+El trabajo implementó un pipeline completo para construir ventanas irregulares, añadir tokens objetivo, entrenar modelos con distintas arquitecturas, evaluar múltiples horizontes futuros y comparar contra baselines simples y modelos adaptados del estado del arte. La fase experimental se cerró con cinco datasets reales, tres semillas por dataset y 24 modelos completos. Aunque este tamaño muestral no permite afirmar significancia estadística fuerte, sí permite declarar tendencias y seleccionar el mejor modelo observado.
 
 \section{Conclusiones principales}
 \label{sec:conclusiones-principales}
 
-Las principales conclusiones que se desprenden de esta memoria son las siguientes:
+Las conclusiones principales son:
 
 \begin{enumerate}
-	\item \textbf{La formulación propuesta es viable y efectiva}. El uso de un encoding temporal continuo sobre timestamps reales se integró de manera natural dentro de un encoder \Transformer\ estándar, sin requerir rediseñar completamente la arquitectura. El modelo convergió de forma estable en los 17 datasets reales evaluados.
-
-	\item \textbf{El modelo propuesto supera consistentemente a todos los baselines}. Sobre el conjunto de test de 17 datasets con 3 semillas, el modelo propuesto obtuvo el menor MSE, RMSE y MAE de forma sistemática, tanto frente a STraTS (un baseline diseñado para irregularidad) como frente a baselines simples (persistencia y modelo lineal). Las diferencias son estadísticamente significativas según el test de Wilcoxon emparejado por dataset.
-
-	\item \textbf{Cada componente de la arquitectura aporta de forma verificable}. Los estudios de ablación mostraron que tanto el encoding temporal continuo como el mecanismo de token objetivo contribuyen individualmente al desempeño. Eliminar cualquiera de los dos componentes produce un deterioro consistente en las métricas sobre test.
-
-	\item \textbf{La simplicidad arquitectónica es una ventaja real}. Frente a enfoques más especializados para irregularidad, la propuesta conserva modularidad, reutilizabilidad e interpretabilidad del pipeline, manteniendo un desempeño superior con un costo computacional comparable.
-
-	\item \textbf{La irregularidad temporal contiene información útil que conviene modelar explícitamente}. La superioridad del modelo completo frente a la variante NoTimeEncoding confirma que tratar el tiempo como una variable continua dentro del embedding es preferible a ignorarlo o colapsarlo en índices discretos.
+	\item \textbf{El mejor modelo de la evaluación final es el encoder--decoder pequeño MT8 con AR contiguo.} Este modelo obtiene MSE 0.1979, RMSE 0.4417 y MAE 0.2193, y gana en los cinco datasets al comparar promedios por dataset.
+	\item \textbf{La mejor arquitectura no fue el encoder base, sino una extensión encoder--decoder autoregresiva.} El modelo ganador usa una configuración pequeña, con $d_{\text{model}}=64$, 2 capas de encoder, 4 cabezas de atención, \emph{feed-forward} 128, \emph{dropout} 0.1, decoder de una capa, entrenamiento con ocho tokens objetivo y ajuste autoregresivo sobre objetivos contiguos.
+	\item \textbf{El ajuste autoregresivo fue el factor arquitectónico más fuerte.} La variante encoder--decoder pequeña sin ajuste obtiene MSE 0.2945; con ajuste AR contiguo baja a 0.1979. La reducción cercana a 33\% sugiere que alinear entrenamiento y generación secuencial de horizontes futuros es especialmente beneficioso en estos datos.
+	\item \textbf{Dentro de los encoders puros, las variantes pequeñas de \CTTransformer\ son las más competitivas.} La mejor variante encoder por MSE es \CTTransformer\ pequeño con Time2Vec y sesgo temporal, con MSE 0.2807, pero queda prácticamente empatada con \CTTransformerSmall, que obtiene 0.2817.
+	\item \textbf{Aumentar capacidad no mejoró el MSE.} \CTTransformerBase\ y el encoder--decoder base tienen más parámetros que sus versiones pequeñas, pero no superan su desempeño. En esta evaluación, los modelos pequeños entregan la mejor relación entre error, tamaño y tiempo.
+	\item \textbf{El identificador de token objetivo aporta una señal útil.} Al eliminarlo, el MSE de \CTTransformerBase\ sube desde 0.2906 hasta 0.3028. Esto respalda la decisión de distinguir explícitamente observaciones históricas y consultas futuras.
+	\item \textbf{El aporte aislado del encoding temporal continuo no queda demostrado.} La ablación sin encoding temporal continuo empata en MSE con \CTTransformerBase, aunque empeora en MAE. Por lo tanto, la evidencia favorece la formulación completa, pero no permite afirmar que el encoding temporal sinusoidal sea por sí solo el componente decisivo.
+	\item \textbf{Los baselines simples siguen siendo importantes.} El modelo lineal temporal alcanza MSE 0.2919, muy cercano al encoder base. Esto muestra que el benchmark exige comparaciones cuidadosas: parte de la estructura predictiva puede capturarse con modelos simples.
+	\item \textbf{STraTS adaptado es competitivo, mientras que CoFormer univariado queda rezagado.} STraTS obtiene MSE 0.3274. CoFormer univariado obtiene 0.5663, resultado esperable en parte porque su diseño original está pensado para relaciones multivariadas asincrónicas, no para el escenario univariado consolidado aquí.
 \end{enumerate}
 
-\section{Solidez de la evidencia experimental}
-\label{sec:solidez-evidencia}
+\section{Contraste con la hipótesis}
+\label{sec:contraste-hipotesis}
 
-A diferencia de una evaluación preliminar, la campaña experimental de esta memoria cumple los siguientes criterios de solidez:
+La hipótesis general queda respaldada con matices. Sí es posible entrenar modelos basados en \Transformers\ directamente sobre timestamps reales, sin imputar ni remuestrear la serie a una grilla temporal fija. También se verifica que los tokens objetivo permiten formular el pronóstico multi-horizonte como consultas futuras explícitas.
 
-\begin{itemize}
-	\item \textbf{17 datasets reales}: la evaluación cubre la totalidad de la colección disponible, lo que permite generalizar los resultados.
-	\item \textbf{3 semillas por combinación}: la variabilidad entre ejecuciones está cuantificada mediante media $\pm$ desviación estándar.
-	\item \textbf{Evaluación sobre test}: las métricas finales corresponden al split de test (15\% de los datos), separado de validación y entrenamiento.
-	\item \textbf{6 modelos comparados}: modelo propuesto, STraTS, modelo lineal, persistencia, y dos variantes de ablación.
-	\item \textbf{Significancia estadística}: las diferencias se verifican con tests de Wilcoxon emparejados e intervalos de confianza bootstrap.
-	\item \textbf{Análisis de costo}: se reportan parámetros y tiempo de entrenamiento para cada modelo.
-\end{itemize}
+\hfill
+
+El matiz principal es arquitectónico. La formulación encoder pura de \CTTransformer\ es viable y competitiva, pero no fue el mejor sistema del benchmark final. El mejor desempeño aparece al separar historia y objetivos en una arquitectura encoder--decoder y luego ajustar autoregresivamente el decoder. En consecuencia, la contribución más fuerte de esta memoria no es sólo usar un encoding temporal continuo dentro de un encoder \Transformer, sino mostrar que la representación con timestamps reales y tokens objetivo puede extenderse naturalmente a un esquema encoder--decoder autoregresivo con mejor desempeño.
+
+\hfill
+
+La hipótesis específica de que el encoding temporal continuo sería siempre el componente crítico no queda confirmada por las ablaciones. En estos cinco datasets, la señal más clara proviene del identificador de token objetivo y del ajuste autoregresivo. El tiempo continuo sigue siendo conceptualmente relevante para evitar regularización a una grilla, pero su efecto empírico aislado requiere más evidencia.
 
 \section{Limitaciones}
-\label{sec:limitaciones-version-actual}
+\label{sec:limitaciones-finales}
 
-A pesar de la solidez del benchmark, esta memoria presenta las siguientes limitaciones:
+Las conclusiones anteriores deben leerse bajo cuatro limitaciones:
 
 \begin{itemize}
-	\item CoFormer \cite{wei2023coformer}, implementado en el repositorio, no pudo incorporarse a la comparación principal debido a su alto costo computacional. Su inclusión habría fortalecido aún más la evaluación del modelo propuesto frente a otro baseline irregular-aware.
-	\item Los datasets evaluados corresponden a series univariadas de sensores. La extensión a escenarios multivariados queda como trabajo futuro.
-	\item No se exploró exhaustivamente el espacio de hiperparámetros del modelo propuesto; los resultados presentados utilizan una configuración base fija.
+	\item La evaluación final usa cinco datasets. Es suficiente para cerrar esta fase y seleccionar un modelo ganador, pero no para sostener una afirmación universal.
+	\item Las series consolidadas son univariadas. Esto limita especialmente la interpretación de CoFormer y deja pendiente la evaluación multivariada asincrónica.
+	\item Las variantes autoregresivas se evaluaron con ocho objetivos contiguos, mientras que los modelos no autoregresivos usan hasta cuatro objetivos dentro del rango de offsets configurado. La comparación refleja el desempeño de los sistemas evaluados, pero no aísla completamente el efecto del protocolo de horizontes.
+	\item No se realizó una búsqueda exhaustiva de hiperparámetros para cada arquitectura. Los resultados comparan configuraciones razonables y consistentes, no óptimos globales por familia.
 \end{itemize}
-
-Estas limitaciones no invalidan las conclusiones principales, pero trazan un camino claro para extensiones futuras.
 
 \section{Trabajo futuro}
 \label{sec:trabajo-futuro}
 
-Las líneas de trabajo futuro más naturales que se desprenden de esta memoria son:
+Las líneas de continuación más relevantes son:
 
 \begin{enumerate}
-	\item \textbf{Incorporar CoFormer}: una vez disponible el cómputo necesario, entrenar y evaluar CoFormer dentro del mismo protocolo experimental para ampliar la comparación con otro baseline irregular-aware.
-	\item \textbf{Optimización de hiperparámetros}: realizar una búsqueda sistemática (Optuna, Bayesian search) sobre la dimensión del modelo, el learning rate, la escala temporal y el número de targets.
-	\item \textbf{Escenarios multivariados}: extender la evaluación a configuraciones donde múltiples variables de entrada y salida interactúan, aprovechando el modo de tokens por evento ya implementado.
-	\item \textbf{Horizontes de predicción}: estudiar sistemáticamente cómo varía el desempeño al cambiar el número y la separación de los horizontes objetivo.
-	\item \textbf{Preentrenamiento y transferencia}: explorar si un preentrenamiento sobre datasets múltiples mejora el desempeño en datasets individuales con pocos datos.
+	\item \textbf{Ampliar la cobertura experimental}: repetir el análisis en más datasets y, si el costo lo permite, aumentar el número de semillas.
+	\item \textbf{Homogeneizar horizontes de evaluación}: comparar variantes autoregresivas y no autoregresivas sobre exactamente el mismo conjunto de timestamps objetivo.
+	\item \textbf{Extender a series multivariadas asincrónicas}: evaluar si CoFormer y las variantes con embeddings de sensor recuperan ventaja cuando existen múltiples variables observadas en tiempos distintos.
+	\item \textbf{Profundizar el ajuste autoregresivo}: estudiar si el beneficio proviene del decoder, de la máscara causal, del número de objetivos o del modo contiguo de entrenamiento.
+	\item \textbf{Explorar regularización y calibración}: medir no sólo error medio, sino estabilidad por horizonte, sesgo de predicción e incertidumbre.
+	\item \textbf{Optimizar costo computacional}: dado que los modelos pequeños rindieron mejor, conviene estudiar compresión, entrenamiento más corto y criterios de parada específicos para cada familia.
 \end{enumerate}
 
 \section{Cierre}
 \label{sec:cierre-memoria}
 
-Esta memoria demuestra que es posible construir un modelo basado en \Transformers\ para forecasting sobre series de tiempo no equiespaciadas manteniendo una arquitectura relativamente simple y obteniendo resultados sólidos y estadísticamente significativos sobre datos reales. El modelo propuesto no sólo funciona, sino que supera consistentemente a baselines tanto especializados como simples, y lo hace con un costo computacional razonable.
+La memoria permite concluir que los \Transformers\ pueden adaptarse de forma efectiva a series de tiempo no equiespaciadas usando timestamps reales y tokens objetivo. El mejor modelo observado es un encoder--decoder pequeño con ajuste autoregresivo contiguo, que supera a \CTTransformerSmall, \CTTransformerBase, STraTS adaptado, persistencia y el modelo lineal temporal en los cinco datasets evaluados.
 
 \hfill
 
-Los estudios de ablación confirman que las innovaciones clave ---encoding temporal continuo y token objetivo--- son componentes que efectivamente aportan al desempeño, justificando la propuesta de diseño. La evidencia experimental reunida es suficientemente amplia y rigurosa para sostener que la línea de investigación es empíricamente exitosa y merece ser profundizada en las direcciones identificadas como trabajo futuro.
+La conclusión final no es que una única pieza resuelva por completo el problema, sino que la combinación de representación temporal directa, tokens objetivo, separación encoder--decoder y generación autoregresiva constituye la ruta más prometedora encontrada en esta evaluación. Con más datasets y una comparación de horizontes completamente homogénea, esta línea tiene una base clara para convertirse en una validación más amplia.

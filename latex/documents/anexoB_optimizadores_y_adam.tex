@@ -1,0 +1,66 @@
+\chapter{Detalles de optimización y scheduler}
+\label{anexo:optimizacion-scheduler}
+
+Este anexo complementa la descripción general de optimización presentada en el Anexo~\ref{anexo:fundamentos-redes}. En particular, se detalla la configuración usada en el benchmark final: optimización con AdamW y una política de tasa de aprendizaje con calentamiento lineal seguido de decaimiento coseno.
+
+\section{AdamW}
+\label{anexo:adamw}
+
+Adam estima momentos de primer y segundo orden del gradiente para adaptar la escala de actualización de cada parámetro \cite{kingma2015adam}. En la práctica, para modelos Transformer se usa frecuentemente AdamW, que separa la regularización por decaimiento de pesos de la actualización adaptativa \cite{loshchilov2019decoupled}. Esta separación evita mezclar el término de regularización con los momentos acumulados del gradiente.
+
+Si $\theta_t$ representa los parámetros, $\eta_t$ la tasa de aprendizaje de la época o paso actual, y $m_t$, $v_t$ los momentos corregidos por sesgo, AdamW puede verse esquemáticamente como:
+\begin{equation}
+    \theta_{t+1}
+    =
+    \theta_t
+    -
+    \eta_t
+    \left(
+        \frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\varepsilon}
+        +
+        \lambda \theta_t
+    \right),
+\end{equation}
+donde $\lambda$ controla el decaimiento de pesos. La idea importante para esta memoria es que $\eta_t$ no se mantiene constante: se modifica durante el entrenamiento mediante un scheduler.
+
+\section{Calentamiento lineal y decaimiento coseno}
+\label{anexo:warmup-cosine}
+
+En los experimentos principales no se usa un CosineAnnealingLR puro, sino una variante con \textbf{calentamiento lineal} (\emph{linear warmup}) seguido de \textbf{decaimiento coseno}. El calentamiento lineal evita comenzar el entrenamiento con una tasa de aprendizaje demasiado alta cuando los pesos todavía no han estabilizado sus representaciones internas. Esta práctica es especialmente útil en arquitecturas Transformer, donde las capas de atención, normalización y proyecciones lineales pueden ser sensibles a los primeros pasos de optimización.
+
+Sea $\eta_{\max}$ la tasa de aprendizaje base, $E$ el número máximo de épocas, $w$ el número de épocas de calentamiento y $e$ la época actual, indexada desde $0$. La tasa de aprendizaje efectiva se define como:
+\begin{equation}
+    \eta(e)
+    =
+    \eta_{\max} \cdot s(e),
+\end{equation}
+donde
+\begin{equation}
+    s(e)
+    =
+    \begin{cases}
+        \dfrac{e+1}{w}, & e < w, \\[8pt]
+        \dfrac{1}{2}
+        \left[
+            1 + \cos\left(
+                \pi
+                \dfrac{e-w}{E-w}
+            \right)
+        \right],
+        & e \geq w.
+    \end{cases}
+\end{equation}
+La primera rama aumenta la tasa de aprendizaje de forma aproximadamente lineal hasta $\eta_{\max}$. La segunda rama aplica un decaimiento suave con forma coseno, relacionado con la familia de políticas de \emph{cosine annealing} \cite{loshchilov2017sgdr}, hasta acercarse a cero al final del entrenamiento.
+
+En la implementación, el scheduler se actualiza una vez por época. Para modelos pequeños y medianos se utiliza $E=30$ con $w=2$, para modelos grandes se utiliza $E=60$ con $w=5$. En variantes más inestables se mantiene la misma forma funcional, pero se aumenta el calentamiento mínimo a cinco épocas y se reduce la tasa de aprendizaje base.
+
+\section{Diferencia con CosineAnnealingLR}
+\label{anexo:diferencia-cosine}
+
+CosineAnnealingLR corresponde al decaimiento coseno sin etapa inicial de calentamiento. En cambio, la configuración principal de esta memoria usa una política compuesta:
+\[
+    \text{linear warmup}
+    \quad \longrightarrow \quad
+    \text{cosine decay}.
+\]
+Por lo tanto, cuando en el texto se habla de decaimiento coseno debe entenderse esta versión con calentamiento, salvo que se indique explícitamente lo contrario. Esta precisión es relevante porque el calentamiento modifica las primeras épocas de entrenamiento y fue parte de la receta usada para mejorar estabilidad en el benchmark final.

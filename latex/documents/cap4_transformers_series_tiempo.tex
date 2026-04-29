@@ -1,11 +1,11 @@
 \chapter{Transformers para series de tiempo no equiespaciadas}
 \label{cap:transformers-series-tiempo}
 
-En este capítulo se presenta la arquitectura \textit{Transformer} adaptada al contexto de series de tiempo no equiespaciadas que se utilizará en esta memoria. El objetivo es describir con precisión cómo se representan las ventanas de historia, cómo se incorporan los \emph{timestamps} irregulares dentro del modelo y cómo se formula la tarea de predicción como una operación sobre un \emph{token target} específico.
+En este capítulo se presenta el marco conceptual que conecta la arquitectura \textit{Transformer} con el problema de series de tiempo no equiespaciadas abordado en esta memoria. El objetivo es fijar los componentes del Transformer clásico que se preservan, explicitar por qué los timestamps irregulares obligan a adaptar la representación temporal y dejar establecido el conjunto de decisiones de diseño que luego se concretarán en \CTTransformer.
 
 \hfill
 
-Primero se revisa brevemente la arquitectura Transformer clásica como modelo de atención sobre secuencias. A continuación se discuten sus ventajas y desafíos al trabajar con series de tiempo. Finalmente, se introduce el modelo propuesto, basado en un \emph{encoder} Transformer con un esquema de \emph{token target} y un \emph{encoding} temporal continuo que opera directamente sobre timestamps reales.
+Primero se revisa brevemente la arquitectura Transformer clásica como modelo de atención sobre secuencias. A continuación se discuten sus ventajas y desafíos al trabajar con series de tiempo. Finalmente, se resumen los principios de adaptación que motivan \CTTransformer, dejando la especificación completa del modelo para el capítulo siguiente.
 
 \section{Recordatorio de la arquitectura Transformer}
 \label{sec:transformer-clasico}
@@ -29,7 +29,7 @@ donde $d_h$ es la dimensión de cada cabeza. En la versión multi-cabeza se repi
 
 \hfill
 
-En esta memoria se trabaja con un \textbf{encoder Transformer} únicamente (sin decodificador), tal como se detalla en el Anexo~\ref{anexo:fundamentos-redes}. Este encoder recibe una secuencia de vectores ya embebidos, aplica varias capas de auto-atención y redes feedforward, y devuelve una representación contextualizada para cada posición de la secuencia.
+En esta memoria se consideran dos formulaciones basadas en Transformer. La formulación principal, utilizada por \CTTransformerBase\ y sus variantes más directas, emplea un \textbf{encoder Transformer} que recibe una secuencia de vectores ya embebidos, aplica varias capas de auto-atención multi-cabeza y redes feedforward, y devuelve una representación contextualizada para cada posición de la secuencia. Además, el benchmark incluye variantes encoder--decoder, donde la historia se procesa con este mismo tipo de encoder y los timestamps objetivo se procesan en un decoder mediante auto-atención multi-cabeza y atención cruzada multi-cabeza. Por claridad, este capítulo desarrolla primero la formulación basada en encoder, y luego explicita cómo se diferencia la extensión encoder--decoder.
 
 \section{Transformers en series de tiempo}
 \label{sec:transformer-series-tiempo}
@@ -54,292 +54,59 @@ Los Transformers clásicos asumen que la información de \emph{posición} se pue
     \item El horizonte de predicción puede definirse naturalmente en unidades de tiempo físico (segundos, minutos, horas) y no sólo en ``pasos'' discretos.
 \end{itemize}
 
-Si se ignorara esta irregularidad y se tratara cada observación como si correspodiera a un paso fijo, el modelo podría confundir historias que, pese a tener el mismo número de puntos, se desarrollan en escalas de tiempo muy distintas. Por ello, en esta memoria se propone incorporar explícitamente el timestamp real en el encoding temporal del Transformer.
+Si se ignorara esta irregularidad y se tratara cada observación como si correspondiera a un paso fijo, el modelo podría confundir historias que, pese a tener el mismo número de puntos, se desarrollan en escalas de tiempo muy distintas. Por ello, en esta memoria se propone incorporar explícitamente el timestamp real en el encoding temporal del Transformer.
 
-\section{Diseño general del modelo propuesto}
+\section{Principios de adaptación para series no equiespaciadas}
 \label{sec:modelo-propuesto}
 
-El modelo propuesto se basa en un \textbf{encoder Transformer} especializado para series de tiempo, al que se denominará \textit{TimeSeriesTransformer}. Su estructura general se puede describir en los siguientes pasos:
+A partir de las ventajas y limitaciones descritas, adaptar un Transformer al problema de series no equiespaciadas exige intervenir principalmente en la \textbf{representación de la secuencia}, no en el bloque encoder en sí. En esta memoria, esa adaptación se apoya en cuatro decisiones de diseño.
 
 \begin{enumerate}
-    \item A partir de la serie completa se construyen ejemplos supervisados mediante ventanas de historia y offsets de predicción (Capítulo~\ref{cap:series-tiempo}).
-    \item Para cada ejemplo se genera una secuencia de entrada que incluye:
-    \begin{itemize}
-        \item Los valores históricos y sus timestamps.
-        \item Un \textbf{token target} adicional, asociado al timestamp objetivo que se quiere predecir.
-    \end{itemize}
-    \item Cada posición de la secuencia se representa mediante la suma de tres componentes:
-    \begin{itemize}
-        \item Un \emph{embedding de valores} (variables de entrada).
-        \item Un \emph{encoding temporal continuo} basado en el timestamp.
-        \item Un \emph{embedding de flag} que distingue entre tokens de historia y token target.
-    \end{itemize}
-    \item La secuencia resultante se procesa con un encoder Transformer estándar de varias capas.
-    \item La representación final en la posición del token target se pasa a una \emph{cabeza de regresión} que produce la predicción para el instante objetivo.
+    \item \textbf{Usar timestamps reales en lugar de posiciones discretas}. La posición de cada observación deja de interpretarse como un índice entero y pasa a representarse mediante un encoding temporal evaluado directamente sobre el tiempo físico.
+    \item \textbf{Representar la predicción como una consulta explícita}. En vez de resumir toda la historia en un embedding global y luego proyectarlo al futuro, la arquitectura incorpora tokens objetivo que representan los instantes donde se desea predecir.
+    \item \textbf{Separar valor, tiempo y rol}. Cada token combina la información observada, su timestamp y un identificador que distingue historia y objetivo, de modo que el modelo no confunda observaciones ya vistas con consultas futuras.
+    \item \textbf{Mantener el encoder Transformer como núcleo computacional}. La irregularidad temporal se incorpora en la representación inicial de los tokens, mientras que la atención multi-cabeza, las conexiones residuales y los bloques feedforward permanecen esencialmente sin cambios.
 \end{enumerate}
 
-En las siguientes secciones se detallan cada uno de estos componentes, conectándolos con la implementación concreta usada en los experimentos.
+En términos conceptuales, estas decisiones pueden resumirse en la representación inicial
+\begin{equation}
+    \mathbf{h}_i^{(0)}
+    =
+    E_{\text{val}}(x_i)
+    +
+    E_{\text{time}}(t_i)
+    +
+    E_{\text{rol}}(f_i),
+\end{equation}
+donde $x_i$ representa el valor asociado al token, $t_i$ su timestamp y $f_i$ su rol dentro de la secuencia. La ecuación no fija todavía una implementación concreta, sólo explicita que la adaptación al tiempo irregular ocurre a nivel de embeddings y construcción de tokens.
 
-\section{Construcción de la secuencia con token target}
+\section{Del marco conceptual al modelo propuesto}
 \label{sec:token-target}
 
-Sea un ejemplo supervisado definido por:
-\begin{itemize}
-    \item Una historia de longitud $L$:
-    \[
-        X^{(\text{past})} = 
-        \begin{bmatrix}
-        \mathbf{x}_{t_{a-L}}^\top \\
-        \vdots \\
-        \mathbf{x}_{t_{a-1}}^\top
-        \end{bmatrix}
-        \in \mathbb{R}^{L \times d_{\text{in}}},
-    \qquad
-        \mathbf{t}^{(\text{past})} = (t_{a-L}, \dots, t_{a-1}) \in \mathbb{R}^{L},
-    \]
-    \item Un timestamp objetivo $t^\star = t_{i_{\text{target}}}$ y el valor a predecir
-    $\mathbf{y}^\star = \mathbf{y}_{i_{\text{target}}} \in \mathbb{R}^{d_{\text{out}}}$.
-\end{itemize}
-
-El \textbf{constructor de secuencias} (\textttbreak{SequenceBuilder}) genera una secuencia extendida de longitud $L+1$ añadiendo al final un token especial asociado al timestamp objetivo:
-\begin{align}
-    \tilde{X} &= 
-    \begin{bmatrix}
-        X^{(\text{past})} \\[2pt]
-        \mathbf{x}^{(\text{target})\,\top}
-    \end{bmatrix}
-    \in \mathbb{R}^{(L+1) \times d_{\text{in}}}, \\
-    \tilde{\mathbf{t}} &= (\mathbf{t}^{(\text{past})}, \; t^\star) \in \mathbb{R}^{L+1},
-\end{align}
-donde $\mathbf{x}^{(\text{target})}$ es un vector \emph{placeholder} para el token target. En los experimentos de esta memoria se considera, principalmente, la opción:
-\begin{equation}
-    \mathbf{x}^{(\text{target})} = \mathbf{0},
-\end{equation}
-es decir, un vector de ceros que indica que no se conocen (ni se usan) variables de entrada en el instante objetivo.
-
-Además, se construye un vector booleano que marca la posición del token target:
-\begin{equation}
-    \mathbf{f} = (0,\dots,0,1) \in \{0,1\}^{L+1},
-\end{equation}
-donde el valor $1$ en la última posición indica que se trata del token target. En la implementación este vector se llama \textttbreak{is\_target\_mask}.
-
-Es importante destacar que este flag \textbf{no} codifica por sí mismo el instante que se desea predecir. La fecha objetivo queda determinada por el timestamp asociado al token target, es decir, por el último elemento de $\tilde{\mathbf{t}}$. Por lo tanto, dos ejemplos pueden tener exactamente el mismo patrón de flags y, sin embargo, pedir predicciones para fechas distintas; la diferencia entre ambos casos entra al modelo a través del encoding temporal evaluado en $t^\star$.
-
-\hfill
-
-Esta secuencia extendida $\{(\tilde{\mathbf{x}}_i, \tilde{t}_i, f_i)\}_{i=1}^{L+1}$ es la que se entregará al modelo Transformer.
-
-\section{Embeddings y encodings}
-\label{sec:embeddings-encodings}
-
-Cada posición de la secuencia se convierte en un vector de dimensión $d_{\text{model}}$ mediante la suma de tres componentes:
-\begin{equation}
-    \mathbf{h}_i^{(0)} = 
-    \underbrace{E_{\text{val}}(\tilde{\mathbf{x}}_i)}_{\text{embedding de valores}}
-    +
-    \underbrace{E_{\text{time}}(\tilde{t}_i)}_{\text{encoding temporal}}
-    +
-    \underbrace{E_{\text{flag}}(f_i)}_{\text{flag historia/target}},
-    \qquad i = 1,\dots,L+1.
-\end{equation}
-
-\subsection{Embedding de valores}
-\label{subsec:embedding-valores}
-
-El \emph{embedding de valores} (\textttbreak{FeatureEmbedding}) es una proyección lineal que lleva el vector de entrada $\tilde{\mathbf{x}}_i \in \mathbb{R}^{d_{\text{in}}}$ a la dimensión interna del modelo:
-\begin{equation}
-    E_{\text{val}}(\tilde{\mathbf{x}}_i) = W_{\text{val}} \tilde{\mathbf{x}}_i + \mathbf{b}_{\text{val}},
-    \qquad
-    W_{\text{val}} \in \mathbb{R}^{d_{\text{model}} \times d_{\text{in}}}, \;
-    \mathbf{b}_{\text{val}} \in \mathbb{R}^{d_{\text{model}}}.
-\end{equation}
-
-Opcionalmente se puede aplicar una normalización de capa sobre la dimensión $d_{\text{model}}$, lo que se controla mediante un parámetro de configuración (\textttbreak{use\_layernorm}).
-
-\subsection{Encoding temporal continuo}
-\label{subsec:encoding-temporal}
-
-El \emph{encoding temporal} (\textttbreak{TimePositionalEncoding}) tiene por objetivo incorporar de manera explícita el timestamp real en la representación del token. En lugar de usar un índice discreto $1,\dots,L+1$, se trabaja directamente con el tiempo físico.
-
-\hfill
-
-Sea $\tilde{\mathbf{t}} = (\tilde{t}_1,\dots,\tilde{t}_{L+1})$ el vector de timestamps de la secuencia extendida. Para cada secuencia se define un tiempo relativo normalizado:
-\begin{equation}
-    \tau_i = \frac{\tilde{t}_i - \tilde{t}_1}{s_{\text{time}}},
-    \qquad i = 1,\dots,L+1,
-\end{equation}
-donde $s_{\text{time}} > 0$ es un hiperparámetro de escala temporal (\textttbreak{time\_scale}) que controla cuántas unidades de tiempo físico corresponden aproximadamente a un ``paso'' en el encoding. Por ejemplo, si los timestamps se expresan en segundos y $s_{\text{time}} = 900$, entonces un salto $\tau_i - \tau_j = 1$ equivale a 15 minutos.
-
-Sobre $\tau_i$ se aplica un encoding sinusoidal continuo, siguiendo la idea de \cite{vaswani2017attention} pero usando tiempos reales:
-% \begin{align}
-%     \big(E_{\text{time}}(\tilde{t}_i)\big)_{2k}
-%         &= \sin\!\left(\tau_i \, / \, 10000^{2k/d_{\text{model}}}\right), \\
-%     \big(E_{\text{time}}(\tilde{t}_i)\big)_{2k+1}
-%         &= \cos\!\left(\tau_i \, / \, 10000^{2k/d_{\text{model}}}\right),
-% \end{align}
-\begin{align}
-    \big(E_{\text{time}}(\tilde{t}_i)\big)_{2k} &= \sin\!\left(\frac{\tau_i}{10000^{\frac{2k}{d}}}\right),\\
-    \big(E_{\text{time}}(\tilde{t}_i)\big)_{2k+1} &= \cos\!\left(\frac{\tau_i}{10000^{\frac{2k}{d}}}\right), 
-\end{align}
-para $k = 0,1,\dots,\lfloor \frac{d}{2} \rfloor - 1$. De este modo, diferencias en el tiempo físico se traducen en rotaciones dentro de un espacio sinusoidal.
-
-\hfill
-
-La implementación también permite, opcionalmente, reemplazar este encoding por un MLP sobre $\tau_i$ (\textttbreak{mode = "mlp"}), aprendiendo directamente una proyección no lineal desde el tiempo a $\mathbb{R}^{d_{\text{model}}}$.
-
-\subsection{Embedding de flag historia/target}
-\label{subsec:flag-target}
-
-El tercer componente es un \emph{embedding de flag} (\textttbreak{TargetFlagEmbedding}) que diferencia explícitamente entre:
-\begin{itemize}
-    \item Tokens de \textbf{historia} ($f_i = 0$).
-    \item El token \textbf{target} ($f_i = 1$).
-\end{itemize}
-
-Este embedding se implementa mediante una tabla de tamaño $2 \times d_{\text{model}}$:
-\begin{equation}
-    E_{\text{flag}}(f_i) = \mathbf{e}^{(\text{flag})}_{f_i},
-\end{equation}
-de manera que el modelo pueda aprender patrones específicos asociados a la posición objetivo (por ejemplo, el hecho de que ese token no contiene valores observados sino el timestamp donde se desea predecir).
-
-En otras palabras, $E_{\text{flag}}$ sólo comunica el \emph{rol} del token dentro de la secuencia (historia u objetivo), mientras que la \emph{fecha concreta} a la que corresponde ese objetivo queda codificada en $E_{\text{time}}(t^\star)$. Esta separación es precisamente la que permite reutilizar la misma arquitectura para distintos horizontes de predicción sin cambiar la posición relativa del token target dentro de la secuencia.
-
-\section{Encoder Transformer y máscara de atención}
-\label{sec:encoder-transformer}
-
-Una vez construidas las representaciones iniciales $\mathbf{h}_1^{(0)},\dots,\mathbf{h}_{L+1}^{(0)}$, se apilan en una matriz
-\begin{equation}
-    H^{(0)} \in \mathbb{R}^{(L+1) \times d_{\text{model}}},
-\end{equation}
-que se procesa mediante $N$ bloques encoder Transformer idénticos:
-\begin{equation}
-    H^{(\ell+1)} = \mathrm{EncoderBlock}^{(\ell)}\!\big(H^{(\ell)}\big),
-    \qquad \ell = 0,\dots,N-1.
-\end{equation}
-
-Cada bloque encoder (\textttbreak{TransformerEncoderBlock}) utiliza:
-\begin{itemize}
-    \item Una capa de auto-atención multi-cabeza (\textttbreak{MultiHeadSelfAttention}).
-    \item Una red feedforward posición a posición.
-    \item Conexiones residuales y \emph{LayerNorm}.
-\end{itemize}
-
-\subsection{Máscara de padding y máscara causal opcional}
-
-Dado que las longitudes de historia pueden variar entre ejemplos, al construir los \emph{batches} se utilizan tensores con padding. Para ello se define una \textbf{máscara de padding} $\mathbf{M}_{\text{pad}} \in \{0,1\}^{B \times (L_{\max}+1)}$, donde $B$ es el tamaño de batch y $L_{\max}$ la longitud máxima del batch. Un valor $1$ indica que la posición correspondiente es padding (y, por tanto, no debe ser atendida ni contribuir a los cálculos de atención). Esta máscara se pasa a la capa de atención como \textttbreak{key\_padding\_mask}.
-
-\hfill
-
-Adicionalmente, el modelo admite una \textbf{máscara causal} opcional (\textttbreak{create\_causal\_mask}). Cuando está activa, se prohíbe que una posición atienda a posiciones futuras, imponiendo una estructura autoregresiva. En los experimentos principales se utiliza atención completa (sin máscara causal) porque el token target se encuentra al final de la secuencia y lo que se desea es que pueda recibir información de toda la historia.
-
-\section{Token target y cabeza de regresión}
-\label{sec:cabeza-regresion}
-
-Tras aplicar las $N$ capas encoder se obtiene una representación contextualizada para cada posición:
-\begin{equation}
-    H^{(N)} =
-    \begin{bmatrix}
-        \mathbf{z}_1^\top \\
-        \vdots \\
-        \mathbf{z}_{L+1}^\top
-    \end{bmatrix}
-    \in \mathbb{R}^{(L+1) \times d_{\text{model}}}.
-\end{equation}
-
-El índice del token target corresponde a la última posición de la secuencia (o, en general, a la posición donde $f_i = 1$). Denotemos su representación por:
-\begin{equation}
-    \mathbf{z}_{\text{target}} = \mathbf{z}_{L+1} \in \mathbb{R}^{d_{\text{model}}}.
-\end{equation}
-
-La \textbf{cabeza de regresión} (\textttbreak{RegressionHead}) proyecta este vector al espacio de salida:
-\begin{equation}
-    \widehat{\mathbf{y}}^\star = g_{\theta_{\text{head}}}(\mathbf{z}_{\text{target}}),
-\end{equation}
-donde $g_{\theta_{\text{head}}}$ es, en su forma más simple, una capa lineal:
-\begin{equation}
-    \widehat{\mathbf{y}}^\star = W_{\text{out}} \mathbf{z}_{\text{target}} + \mathbf{b}_{\text{out}},
-    \qquad
-    W_{\text{out}} \in \mathbb{R}^{d_{\text{out}} \times d_{\text{model}}},
-\end{equation}
-aunque la implementación permite incluir una pequeña MLP (una capa oculta adicional con función de activación y dropout) si se desea mayor capacidad.
-
-\hfill
-
-El entrenamiento se realiza minimizando la pérdida entre $\widehat{\mathbf{y}}^\star$ y la salida verdadera $\mathbf{y}^\star$, típica­mente usando el error cuadrático medio, tal como se describe en detalle en el capítulo de entrenamiento y experimentos.
-
-\section{Manejo de historias y horizontes variables}
-\label{sec:historias-horizontes-variables}
-
-Una de las motivaciones centrales de este diseño es permitir que el modelo:
-\begin{enumerate}
-    \item Trabaje con historias de longitud variable, adaptándose a series con densidades de muestreo distintas.
-    \item Soporte distintos horizontes de predicción (diferentes offsets) dentro de un mismo esquema arquitectónico.
-\end{enumerate}
-
-\subsection{Historias de longitud variable}
-
-El tamaño máximo de historia $H$ se fija como hiperparámetro, pero durante el entrenamiento se puede muestrear una longitud $h$ entre un mínimo $H_{\min}$ y $H$. Esto significa que el modelo ve ejemplos con secuencias de entrada de distinto largo, lo que lo entrena a ser robusto frente a ventanas de contexto más cortas o más largas.
-
-\hfill
-
-Gracias a la naturaleza del Transformer:
-\begin{itemize}
-    \item No es necesario reconfigurar pesos cuando cambia $h$; sólo se modifica la longitud de la secuencia.
-    \item La máscara de padding garantiza que, dentro de un mismo batch, las posiciones de padding no afecten la atención ni la salida.
-\end{itemize}
-
-En términos prácticos, esto se implementa en el \textttbreak{TimeSeriesDataset} (que elige $h$ y el offset) y en el \textttbreak{collate\_fn} que construye los tensores de batch con padding.
-
-\subsection{Offsets de predicción múltiples}
-
-El conjunto de offsets de predicción puede definirse como:
-\begin{equation}
-    \mathcal{O} = \{o_1, o_2, \dots, o_K\},
-\end{equation}
-y para cada ejemplo de entrenamiento se elige un offset $o \in \mathcal{O}$ (por ejemplo, al azar). El timestamp objetivo $t^\star$ y, en consecuencia, el token target, cambian entonces según el horizonte seleccionado.
-
-\hfill
-
-Este mecanismo tiene dos efectos:
-\begin{itemize}
-    \item Permite entrenar un solo modelo capaz de predecir a distintos horizontes (por ejemplo, 15 minutos, 1 hora y 3 horas) sin necesidad de entrenar un modelo separado por cada horizonte.
-    \item Obliga al modelo a utilizar de manera explícita la información temporal contenida en el encoding $E_{\text{time}}$, ya que el instante objetivo no está determinado por el flag binario ni por la posición final del token, sino por el timestamp que se le asigna y que luego se transforma en su encoding temporal.
-\end{itemize}
-
-En la práctica, el uso de offsets múltiples se configura a través del parámetro \textttbreak{target\_offset\_choices} en el dataset, descrito en el Capítulo~\ref{cap:series-tiempo}.
-
-\section{Inferencia y pronósticos multi-step}
-\label{sec:inferencia-rolling}
-
-Para la fase de inferencia se ofrecen dos componentes de alto nivel:
+Sobre esta base, el paso desde el Transformer clásico hacia \CTTransformer\ consiste en especificar una serie de decisiones concretas que ya pertenecen al modelo propuesto propiamente tal:
 
 \begin{itemize}
-    \item \textbf{Predictor}, que envuelve al modelo Transformer y se encarga de:
-    \begin{itemize}
-        \item Aplicar los \emph{scalers} de entrada y salida (normalización y des-normalización).
-        \item Construir la secuencia con token target para un único timestamp objetivo.
-    \end{itemize}
-    \item \textbf{RollingForecaster}, que permite realizar pronósticos multi-step sobre un conjunto de timestamps futuros.
+    \item cómo se construyen ejemplos supervisados con historias variables y offsets de predicción,
+    \item cómo se agregan tokens objetivo al final de la historia,
+    \item cómo se normaliza el tiempo y qué variante de encoding temporal se utiliza,
+    \item cómo se organiza la variante encoder--decoder respecto de la arquitectura base de encoder único,
+    \item y cómo se formulan la pérdida, la inferencia y el pronóstico multi-step en la implementación experimental.
 \end{itemize}
 
-Dado un historial $(X^{(\text{past})}, \mathbf{t}^{(\text{past})})$ y una colección de timestamps futuros $\{t^\star_1,\dots,t^\star_M\}$, el \textttbreak{RollingForecaster} llama repetidamente al \textttbreak{Predictor} para obtener:
-\begin{equation}
-    \widehat{\mathbf{y}}^\star_1, \dots, \widehat{\mathbf{y}}^\star_M,
-\end{equation}
-manteniendo fija la historia y cambiando sólo el token target. Este esquema corresponde al modo \textttbreak{``fixed\_history''}; en futuras extensiones se podría considerar un modo autoregresivo que vaya incorporando las predicciones al historial.
+Estas decisiones ya no son parte de un recordatorio general sobre Transformers, sino de la definición específica de \CTTransformer. Por eso se desarrollan en el Capítulo~\ref{cap:modelo-no-equiespaciado}, donde se describe la arquitectura completa, su representación de entrada y sus variantes experimentales.
+
+Conviene subrayar la división de responsabilidades entre ambos capítulos. El presente capítulo responde a la pregunta \emph{por qué} un Transformer estándar necesita ser adaptado cuando el tiempo deja de ser equiespaciado. El capítulo siguiente responde a \emph{cómo} se implementa esa adaptación en la arquitectura concreta evaluada en la memoria.
 
 \section{Resumen del capítulo}
 
-En este capítulo se ha descrito la arquitectura Transformer adaptada para series de tiempo no equiespaciadas utilizada en esta memoria. Los elementos clave son:
+En este capítulo se ha fijado el marco conceptual que conecta la arquitectura Transformer con el problema de series de tiempo no equiespaciadas. Los elementos clave son:
 
 \begin{itemize}
-    \item El uso de un \textbf{encoder Transformer} sobre una secuencia que incluye un \textbf{token target} asociado al instante objetivo de predicción.
-    \item La construcción de la secuencia mediante el \textttbreak{SequenceBuilder}, que concatena historia y token target, junto con una máscara \textttbreak{is\_target\_mask}.
-    \item Un esquema de \textbf{encoding temporal continuo} (\textttbreak{TimePositionalEncoding}) que opera directamente sobre los timestamps, permitiendo manejar datos no equiespaciados y distintos horizontes de predicción.
-    \item La combinación de un \textbf{embedding de valores}, un \textbf{embedding de flag historia/target} y el encoding temporal para representar cada token en la dimensión interna del modelo.
-    \item El uso de máscaras de padding y, opcionalmente, máscaras causales, para manejar secuencias de longitud variable dentro de los bloques de auto-atención.
-    \item Una \textbf{cabeza de regresión} sobre la representación del token target, que produce la predicción en el instante deseado.
-    \item Herramientas de inferencia (\textttbreak{Predictor}, \textttbreak{RollingForecaster}) que facilitan la aplicación del modelo a pronósticos de uno o múltiples pasos en el tiempo.
+    \item El bloque encoder Transformer sigue siendo el núcleo del modelo, la adaptación principal ocurre en la forma de representar la secuencia de entrada.
+    \item El uso de timestamps irregulares obliga a reemplazar la noción de posición discreta por una representación temporal continua evaluada en tiempos reales.
+    \item La predicción puede formularse como una consulta explícita mediante tokens objetivo, en lugar de depender únicamente de un embedding global de la historia.
+    \item La separación entre valor, tiempo y rol permite conservar la estructura general del Transformer e introducir información temporal sin rediseñar por completo la arquitectura.
+    \item La especificación completa de estas decisiones define ya a \CTTransformer\ y se desarrolla en el capítulo siguiente.
 \end{itemize}
 
-En el capítulo siguiente se describirá el procedimiento de entrenamiento, los conjuntos de datos utilizados y el diseño de los experimentos que permitirán evaluar empíricamente el desempeño de este modelo frente a otros enfoques basados en Transformers y modelos baselines para series de tiempo.
+En el capítulo siguiente se describe \CTTransformer\ en detalle: construcción de ejemplos, secuencias con tokens objetivo, embeddings, variantes arquitectónicas e implicancias para entrenamiento e inferencia.

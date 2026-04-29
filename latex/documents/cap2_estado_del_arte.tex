@@ -1,7 +1,7 @@
 \chapter{Estado del arte}
 \label{cap:estado-del-arte}
 
-En este capítulo se revisan los principales enfoques para modelar series de tiempo con marcas de tiempo irregulares, tanto para tareas de \emph{forecasting} como de clasificación. El objetivo es situar la propuesta de esta memoria dentro del contexto de la literatura reciente, destacando las ventajas y limitaciones de cada familia de modelos, y las brechas que motivan el modelo basado en \Transformers\ descrito en los capítulos siguientes.
+Este capítulo revisa los principales enfoques para modelar series de tiempo con marcas de tiempo irregulares, tanto para tareas de \emph{forecasting} como de clasificación. El objetivo es situar la propuesta de esta memoria dentro del contexto de la literatura reciente, destacando las ventajas y limitaciones de cada familia de modelos, y las brechas que motivan el modelo basado en \Transformers\ descrito en los capítulos siguientes.
 
 \section{Modelos clásicos para series de tiempo irregulares}
 \label{sec:estado-arte-clasicos}
@@ -14,7 +14,7 @@ Una estrategia ampliamente utilizada para tratar series no equiespaciadas consis
     \item \textbf{Imputación} de valores faltantes mediante métodos simples (cero, promedio, \textit{forward/backward fill}) o técnicas más avanzadas (interpolación, imputación múltiple, \textit{splines}, \emph{kalman smoothing}, etc.).
 \end{itemize}
 
-Sobre la serie regularizada se aplican luego modelos estándar como ARIMA, modelos de suavizamiento exponencial, redes recurrentes o \Transformers\ para datos equiespaciados. Esta aproximación es sencilla de implementar y permite reutilizar modelos consolidados; sin embargo, presenta limitaciones relevantes:
+Sobre la serie regularizada se aplican luego modelos estándar como ARIMA, modelos de suavizamiento exponencial, redes recurrentes o \Transformers\ para datos equiespaciados. Esta aproximación es sencilla de implementar y permite reutilizar modelos consolidados, sin embargo, presenta limitaciones relevantes:
 \begin{itemize}
     \item La elección del paso de malla introduce un \textbf{compromiso} entre resolución temporal y costo computacional.
     \item La imputación puede introducir \textbf{sesgos} sistemáticos cuando la irregularidad está asociada a la dinámica del sistema (por ejemplo, muestreo más denso durante eventos anómalos).
@@ -72,7 +72,7 @@ Otros trabajos relacionados incluyen:
 
 En general, estos enfoques muestran que incorporar explícitamente el tiempo transcurrido entre observaciones y la estructura de datos faltantes mejora de manera consistente el rendimiento en \emph{forecasting} y clasificación, especialmente en dominios como salud, donde la irregularidad y \emph{missingness} son altamente informativas.
 
-\subsection{Modelos en tiempo continuo: Neural ODE, ODE-RNN y GRU–ODE–Bayes}
+\subsection[Modelos en tiempo continuo: Neural ODE y variantes]{Modelos en tiempo continuo: Neural ODE, ODE-RNN y GRU–ODE–Bayes}
 
 Un segundo grupo de trabajos adopta una perspectiva de \textbf{tiempo continuo}, en la cual la dinámica latente de la serie se modela mediante ecuaciones diferenciales. En lugar de actualizar el estado oculto en pasos discretos fijos, estos modelos integran una EDO entre observaciones, lo que permite manejar de manera natural tiempos de muestreo irregulares.
 
@@ -113,13 +113,13 @@ Los \Transformers\ han demostrado un rendimiento sobresaliente en procesamiento 
 El uso de \Transformers\ en series de tiempo regulares se ha disparado en los últimos años. Numerosos trabajos han propuesto arquitecturas y componentes especializados para mejorar el rendimiento y la eficiencia computacional en pronósticos de largo horizonte, típicamente bajo el supuesto de observaciones equiespaciadas:
 \begin{itemize}
     \item \textbf{Informer}: introduce una atención \emph{prob-sparse} para reducir la complejidad cuadrática a casi lineal en la longitud de la secuencia, manteniendo el foco en las contribuciones de atención más relevantes. Propone además un esquema de codificación temporal híbrida (posicional + \emph{time-of-day}, \emph{day-of-week}, etc.) y demuestra mejoras significativas en benchmarks de \emph{forecasting} multivariante \cite{zhou2021informer}.
-    \item \textbf{Autoformer}: replantea la auto-atención como un mecanismo de auto-correlación sobre descomposiciones tendencia–estacionalidad, proponiendo un bloque de \emph{series decomposition} que separa componentes de baja frecuencia y patrones periódicos. Esta descomposición se integra en las capas del \Transformer, mejorando la capacidad de modelar estructuras de largo plazo \cite{wu2021autoformer}.
+    \item \textbf{Autoformer}: replantea la auto-atención como un mecanismo de auto-correlación sobre descomposiciones tendencia-estacionalidad, proponiendo un bloque de \emph{series decomposition} que separa componentes de baja frecuencia y patrones periódicos. Esta descomposición se integra en las capas del \Transformer, mejorando la capacidad de modelar estructuras de largo plazo \cite{wu2021autoformer}.
     \item \textbf{FEDformer}: extiende la idea de Autoformer incorporando descomposición en dominios de frecuencia y empleando atención sobre componentes seleccionados en el espacio espectral, lo que reduce la carga computacional manteniendo la expresividad para series largas \cite{zhou2022fedformer}.
 \end{itemize}
 
 Si bien estas arquitecturas logran resultados de vanguardia en benchmarks populares, comparten supuestos clave:
 \begin{itemize}
-    \item Las observaciones están en una malla \textbf{equiespaciada}; el índice de tiempo se puede tratar como un entero $1,\dots,T$.
+    \item Las observaciones están en una malla \textbf{equiespaciada}, el índice de tiempo se puede tratar como un entero $1,\dots,T$.
     \item El \emph{positional encoding} se define típicamente sobre estos índices discretos, a veces enriquecido con \emph{features} calendáricas (hora del día, día de la semana, etc.), pero no sobre \emph{timestamps} reales.
 \end{itemize}
 
@@ -139,9 +139,9 @@ Estas ideas son particularmente relevantes para series irregulares: si el \emph{
 
 Más allá de los \emph{encodings} continuos, una línea muy relevante del estado del arte reciente consiste en construir \textbf{tokens directamente a partir de observaciones irregulares}, evitando la regularización previa sobre una malla fija. En esta familia destacan, al menos, dos estrategias representativas.
 
-La primera consiste en tratar la serie como un \textbf{conjunto de eventos u observaciones}. Un ejemplo claro es \textbf{STraTS} \cite{tipirneni2022strats}, que representa cada medición mediante un triplete $(t,f,v)$ compuesto por tiempo, variable y valor, y aplica un \Transformer\ sobre estas observaciones embebidas. Su contribución principal es demostrar que un esquema de atención estándar puede operar directamente sobre datos clínicos dispersos e irregulares sin recurrir a imputación o agregación horaria agresiva. Además, incorpora un objetivo de auto-supervisión basado en \emph{forecasting} para mejorar la calidad de las representaciones cuando los datos etiquetados son escasos. Este enfoque es conceptualmente cercano a la idea de esta memoria de trabajar con \emph{timestamps} reales, aunque fue validado principalmente en tareas de clasificación clínica y con una tokenización centrada en observaciones individuales más que en ventanas de historia con \emph{token objetivo}.
+La primera consiste en tratar la serie como un \textbf{conjunto de eventos u observaciones}. Un ejemplo claro es \textbf{STraTS} \cite{tipirneni2022strats}, que representa cada medición mediante una tripleta $(t,f,v)$ compuesta por tiempo, variable y valor. El modelo construye un embedding inicial sumando tres componentes: un embedding de variable, un embedding continuo del valor y un embedding continuo del tiempo. Estas representaciones se contextualizan con un encoder \Transformer\ y luego se fusionan mediante atención para producir un embedding global de la serie. Su contribución principal es demostrar que un esquema de atención puede operar directamente sobre datos clínicos dispersos e irregulares sin recurrir a imputación o agregación horaria agresiva. Además, incorpora un objetivo de auto-supervisión basado en \emph{forecasting}, pero dicho objetivo se utiliza como tarea auxiliar para mejorar las representaciones, la validación principal del trabajo corresponde a clasificación clínica. Por ello, STraTS es cercano a esta memoria en el uso explícito de tiempos reales, pero se diferencia en que no formula el pronóstico como consultas futuras mediante tokens objetivo ni como un esquema encoder--decoder.
 
-La segunda estrategia consiste en definir mecanismos de atención que respeten explícitamente la estructura irregular en los ejes temporal y multivariable. En esta línea, \textbf{CoFormer} \cite{wei2023coformer} modela cada muestra como un punto \emph{variate-time} y alterna atención \emph{intra-variate} e \emph{inter-variate} sobre vecindarios definidos por variable y cercanía temporal. De esta forma, el modelo aprende por separado la evolución temporal de cada variable y las interacciones entre variables asincrónicas. Frente a un encoder \Transformer\ completamente estándar, CoFormer introduce una inductive bias más fuerte y explícita para manejar la desalineación temporal; a cambio, su arquitectura es más específica del problema y menos directamente reutilizable como bloque genérico de \emph{forecasting}.
+La segunda estrategia consiste en definir mecanismos de atención que respeten explícitamente la estructura irregular en los ejes temporal y multivariable. En esta línea, \textbf{CoFormer} \cite{wei2023coformer} modela cada muestra como un punto \emph{variate-time}: una medición asociada a una variable y a un instante continuo. Primero combina un embedding de medición con códigos de variable y tiempo, luego aplica de forma sucesiva atención \emph{intra-variate}, que conecta mediciones de la misma variable, y atención \emph{inter-variate}, que conecta mediciones de variables distintas cercanas en el tiempo. Finalmente agrega las representaciones por variable y después a nivel de observación. Frente a un encoder \Transformer\ completamente estándar, CoFormer introduce un sesgo inductivo más fuerte para la desalineación temporal y multivariable. Esta fortaleza depende precisamente de la existencia de varias variables asincrónicas, en escenarios univariados, la rama intervariable pierde parte de su función original.
 
 Junto con estos modelos orientados a observaciones, siguen existiendo propuestas que integran nociones explícitas de \textbf{tiempo continuo} en la trayectoria latente o en la representación de la secuencia:
 \begin{itemize}
@@ -198,7 +198,7 @@ Buena parte de los modelos de deep learning revisados en la Sección~\ref{sec:es
     \item Neural CDE y modelos relacionados, que tratan la trayectoria como un camino continuo y aprenden funciones sobre dicho camino para predecir etiquetas globales o evento–tiempo \cite{kidger2020neural}.
 \end{itemize}
 
-En la práctica, las diferencias entre forecasting y clasificación se reducen a la elección de la capa de salida (regresión vs clasificación) y de la función de pérdida (MSE vs entropía cruzada). Las consideraciones arquitectónicas para manejar irregularidad son en gran medida las mismas.
+En modelos que producen un embedding global de la serie, la adaptación entre clasificación y regresión puede reducirse en parte a cambiar la capa de salida y la función de pérdida. Sin embargo, el \emph{forecasting} multi-horizonte introduce una decisión adicional: cómo condicionar la predicción en los instantes futuros concretos. Esta distinción es relevante para esta memoria, porque \CTTransformer\ representa cada instante de predicción mediante un token objetivo con su timestamp, mientras que varios modelos de clasificación irregular, como STraTS y CoFormer en sus formulaciones originales, agregan primero la historia en una representación global.
 
 \subsection{Transformers para clasificación de series irregulares}
 
@@ -215,7 +215,7 @@ La evidencia reciente sugiere que los \Transformers\ sí pueden ser competitivos
 \section{Discusión y brechas de investigación}
 \label{sec:brechas-estado-arte}
 
-A partir de la revisión anterior, se pueden identificar varias brechas que motivan el modelo propuesto en esta memoria:
+A partir de la revisión anterior, se pueden identificar varias brechas que motivan el diseño de \CTTransformer\ en esta memoria:
 
 \begin{enumerate}
     \item \textbf{Dependencia de re-muestreo e imputación}. Muchos enfoques prácticos siguen descansando en la regularización de la serie sobre una malla fija, con el riesgo de introducir sesgos y perder información sobre la distribución real de los tiempos de muestreo.
@@ -240,4 +240,4 @@ En este contexto, la contribución de la presente memoria se sitúa en el cruce 
     \item Explorar el entrenamiento con \textbf{historias de longitud variable} y \textbf{múltiples offsets de predicción} dentro de un mismo modelo, evaluando cómo estas decisiones de diseño afectan la capacidad de generalización en escenarios sintéticos y reales.
 \end{itemize}
 
-Los capítulos siguientes desarrollan en detalle esta propuesta: el Capítulo~\ref{cap:series-tiempo} formaliza el problema y la construcción de ejemplos supervisados; el Capítulo~\ref{cap:transformers-series-tiempo} presenta la arquitectura base de \Transformers\ para series de tiempo; y el Capítulo~\ref{cap:modelo-no-equiespaciado} describe el modelo no equiespaciado propuesto, junto con su implementación concreta.
+Los capítulos siguientes desarrollan en detalle esta propuesta: el Capítulo~\ref{cap:series-tiempo} formaliza el problema y la construcción de ejemplos supervisados, el Capítulo~\ref{cap:transformers-series-tiempo} presenta la arquitectura base de \Transformers\ para series de tiempo, y el Capítulo~\ref{cap:modelo-no-equiespaciado} describe \CTTransformer, junto con su implementación concreta.

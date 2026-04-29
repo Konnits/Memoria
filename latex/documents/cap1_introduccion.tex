@@ -7,15 +7,15 @@ La predicción de series de tiempo es un problema central en múltiples áreas d
 
 \hfill
 
-Tradicionalmente, la modelación de series de tiempo se ha abordado mediante modelos estadísticos como ARIMA, modelos autorregresivos vectoriales (VAR) o modelos de suavizamiento exponencial. Más recientemente, el desarrollo de técnicas de \textit{aprendizaje profundo} ha dado lugar a arquitecturas como las redes recurrentes (RNN), las redes LSTM y GRU, así como modelos convolucionales específicamente adaptados a datos temporales. Sin embargo, en los últimos años ha emergido con fuerza una familia de modelos basada en el mecanismo de atención, conocida como \textit{Transformers}, que ha demostrado un rendimiento sobresaliente en tareas de procesamiento de lenguaje natural, visión computacional y, en menor medida, en series de tiempo.
+Tradicionalmente, la modelación de series de tiempo se ha abordado mediante modelos estadísticos como ARIMA, modelos autorregresivos vectoriales (VAR) o modelos de suavizamiento exponencial. Más recientemente, el desarrollo de técnicas de \textit{aprendizaje profundo} ha dado lugar a arquitecturas como las redes recurrentes (RNN), las redes LSTM y GRU, así como modelos convolucionales específicamente adaptados a datos temporales. Sin embargo, en los últimos años ha emergido con fuerza una familia de modelos basada en el mecanismo de atención, conocida como \textit{Transformers}, que ha demostrado un rendimiento sobresaliente en tareas de procesamiento de lenguaje natural y visión computacional.
 
 \hfill
 
-La mayoría de las aplicaciones exitosas de Transformers a series de tiempo asume implícita o explícitamente que las observaciones están \textbf{equiespaciadas} en el tiempo; es decir, que el intervalo entre mediciones es constante. Esta suposición simplifica la definición de posiciones en la secuencia y permite reutilizar sin cambios el \textit{positional encoding} sinusoidal clásico. No obstante, en muchos sistemas reales los datos no se registran con una frecuencia perfectamente regular: pueden existir lapsos de tiempo sin mediciones, lecturas adicionales cuando se detectan eventos relevantes, fallas en los sensores o cambios en la tasa de muestreo. En estas situaciones se habla de \textbf{series de tiempo no equiespaciadas}.
+La mayoría de las aplicaciones exitosas de Transformers a series de tiempo asume implícita o explícitamente que las observaciones están \textbf{equiespaciadas} en el tiempo, es decir, que el intervalo entre mediciones es constante. Esta suposición simplifica la definición de posiciones en la secuencia y permite reutilizar sin cambios el \textit{positional encoding} sinusoidal clásico. No obstante, en muchos sistemas reales los datos no se registran con una frecuencia perfectamente regular: pueden existir lapsos de tiempo sin mediciones, lecturas adicionales cuando se detectan eventos relevantes, fallas en los sensores o cambios en la tasa de muestreo. En estas situaciones se habla de \textbf{series de tiempo no equiespaciadas}.
 
 \hfill
 
-Trabajar con series no equiespaciadas introduce desafíos adicionales. Una práctica habitual consiste en \textit{regularizar} la serie mediante técnicas como re-muestreo (por ejemplo, cada 5 minutos) e imputación de valores faltantes. Si bien esto permite reutilizar modelos diseñados para series equiespaciadas, también introduce sesgos y pérdida de información temporal, especialmente cuando la irregularidad es alta o cuando la dinámica del sistema depende críticamente de la distribución real de los tiempos de observación.
+Trabajar con series no equiespaciadas introduce desafíos adicionales. Una práctica habitual consiste en \textit{regularizar} la serie mediante técnicas como el re-muestreo (por ejemplo, cada 5 minutos) e imputación de valores faltantes. Si bien esto permite reutilizar modelos diseñados para series equiespaciadas, también introduce sesgos y pérdida de información temporal, especialmente cuando la irregularidad es alta o cuando la dinámica del sistema depende críticamente de la distribución real de los tiempos de observación.
 
 \hfill
 
@@ -26,13 +26,13 @@ En este contexto, surge la motivación de investigar si es posible adaptar la ar
 El problema que se aborda en esta memoria puede resumirse de la siguiente forma:
 
 \begin{quote}
-    \textit{Desarrollar una estrategia para utilizar modelos tipo Transformer para la predicción de series de tiempo no equiespaciadas, incorporando los timestamps de forma explícita mediante un encoding temporal continuo, comparar su desempeño con enfoques basales que asumen series equiespaciadas y con modelos del estado del arte diseñados para manejar series no equiespaciadas.}
+    \textit{Desarrollar una estrategia para utilizar modelos tipo Transformer en la predicción de series de tiempo no equiespaciadas, incorporando los timestamps de forma explícita mediante una representación temporal continua, sin imponer una grilla temporal fija, y comparar su desempeño con baselines simples y modelos adaptados a observaciones irregulares.}
 \end{quote}
 
 En particular, se busca responder si un Transformer diseñado para operar con tiempos reales (por ejemplo, segundos desde un origen de referencia), y no sólo con índices enteros de posición, es capaz de:
 \begin{itemize}
     \item Capturar adecuadamente la dinámica de series de tiempo donde los intervalos entre mediciones son variables.
-    \item Mantener o mejorar el desempeño predictivo respecto de modelos entrenados sobre versiones re-muestreadas o imputadas de la misma serie.
+    \item Alcanzar un desempeño predictivo competitivo frente a baselines simples y modelos diseñados o adaptados para observaciones irregulares.
     \item Ofrecer una formulación lo suficientemente flexible como para manejar ventanas de historia de longitud variable y distintos horizontes de predicción, sin necesidad de rediseñar la arquitectura.
 \end{itemize}
 
@@ -40,19 +40,19 @@ Este problema combina aspectos conceptuales---cómo representar el tiempo de for
 
 \section{Hipótesis y preguntas de investigación}
 
-A partir del problema descrito, se plantea la siguiente hipótesis central:
+A partir del problema descrito, se plantea la siguiente hipótesis de trabajo:
 
 \begin{quote}
-    \textbf{Hipótesis:} \textit{Un modelo Transformer que incorpore un encoding temporal continuo basado en los timestamps reales de las observaciones puede modelar series de tiempo no equiespaciadas de manera competitiva o superior a enfoques que requieren re-muestreo e imputación sobre una grilla temporal fija.}
+    \textbf{Hipótesis de trabajo:} \textit{Una arquitectura tipo Transformer que represente los timestamps como variables continuas y distinga explícitamente entre tokens de historia y tokens objetivo puede aprender directamente de series de tiempo no equiespaciadas, sin regularizarlas previamente sobre una grilla temporal fija. Bajo esta formulación, el modelo puede alcanzar un desempeño predictivo competitivo frente a baselines simples y modelos adaptados a observaciones irregulares.}
 \end{quote}
 
 De esta hipótesis se desprenden varias preguntas específicas:
 
 \begin{itemize}
-    \item ¿Qué tipo de encoding temporal continuo resulta adecuado para representar los timestamps en el espacio latente del modelo? ¿Un encoding sinusoidal continuo es suficiente o se requieren componentes aprendibles adicionales?
-    \item ¿Cómo afecta la irregularidad en los tiempos de muestreo al desempeño de un Transformer con encoding temporal continuo, en comparación con un Transformer estándar entrenado sobre datos re-muestreados?
+    \item ¿Cómo representar los timestamps reales dentro de un Transformer sin convertir previamente la serie a una grilla equiespaciada?
     \item ¿Es posible diseñar un esquema de construcción de ventanas de historia y horizontes de predicción que permita al modelo entrenarse con longitudes de contexto variables y distintos offsets de predicción?
-    \item ¿Qué impacto tienen las decisiones de entrenamiento (función de pérdida, optimizador, normalización de datos) en la estabilidad y desempeño del modelo en este escenario no equiespaciado?
+    \item ¿Qué aporte muestran los componentes principales de la propuesta, en particular el encoding temporal continuo y el identificador historia--objetivo?
+    \item ¿Cómo se compara la arquitectura propuesta, en error predictivo y costo computacional, frente a baselines simples y modelos adaptados a observaciones irregulares?
 \end{itemize}
 
 Responder estas preguntas requiere tanto de una formulación conceptual clara de la arquitectura propuesta como de una campaña experimental controlada, que permita aislar el efecto de la representación temporal respecto de otros factores.
@@ -64,7 +64,7 @@ Responder estas preguntas requiere tanto de una formulación conceptual clara de
 El objetivo general de esta memoria es:
 
 \begin{quote}
-    \textit{Diseñar, implementar y evaluar un modelo tipo Transformer para la predicción de series de tiempo no equiespaciadas, incorporando explícitamente los timestamps mediante un encoding temporal continuo, y analizar su desempeño y limitaciones en comparación con enfoques basales.}
+    \textit{Diseñar, implementar y evaluar la familia de arquitecturas propuesta para la predicción de series de tiempo no equiespaciadas, incorporando explícitamente los timestamps mediante una representación temporal continua, y analizar su desempeño, costo computacional y limitaciones frente a baselines simples y modelos adaptados a observaciones irregulares.}
 \end{quote}
 
 \subsection{Objetivos específicos}
@@ -86,36 +86,37 @@ Para alcanzar este objetivo general, se plantean los siguientes objetivos espec�
         \item Entrenamiento del modelo con historias de longitud fija o variable, y con uno o varios offsets de predicción\footnote{En este contexto, un \emph{offset de predicción} es la distancia entre el último punto de la historia usada como entrada y el instante futuro que se desea predecir. Por ejemplo, un offset de 1 puede corresponder al siguiente punto de la serie, mientras que un offset de 20 puede representar predecir veinte pasos más adelante.} posibles, lo que posibilita estudiar el efecto del horizonte de predicción sobre el desempeño.
         \item Módulos de escalado, funciones de pérdida, métricas y bucles de entrenamiento reproducibles.
     \end{itemize}
-    \item \textbf{Diseñar y ejecutar experimentos} sobre datos sintéticos y datos reales que permitan comparar:
+    \item \textbf{Diseñar y ejecutar experimentos} sobre datos reales procesados que permitan comparar:
     \begin{itemize}
-        \item El modelo Transformer propuesto con encoding temporal continuo.
-        \item Baselines tradicionales (por ejemplo, modelos entrenados sobre series re-muestreadas equiespaciadas).
+        \item La familia de arquitecturas propuesta con encoding temporal continuo.
+        \item Baselines simples, ablaciones y modelos del estado del arte adaptados a observaciones irregulares.
     \end{itemize}
-    utilizando métricas de error de regresión (MSE, RMSE, MAE, MAPE) y análisis cualitativo de curvas de predicción.
-    \item \textbf{Analizar los resultados} para evaluar la viabilidad del enfoque, identificar sus ventajas y limitaciones, y proponer posibles líneas de trabajo futuro.
+    utilizando métricas de error de regresión (MSE, RMSE, MAE, MAPE), análisis de costo computacional y comparaciones emparejadas cuando exista cobertura experimental suficiente.
+    \item \textbf{Analizar los resultados} para contrastar la hipótesis de trabajo, evaluar la viabilidad del enfoque, identificar sus ventajas y limitaciones, distinguir evidencia preliminar de conclusiones definitivas, y proponer posibles líneas de trabajo futuro.
 \end{enumerate}
 
 \section{Enfoque y resumen de la propuesta}
 
-Para abordar los objetivos anteriores, en esta memoria se desarrolla una arquitectura basada en el modelo Transformer adaptada específicamente a series de tiempo no equiespaciadas. De forma muy resumida, la propuesta se estructura en los siguientes componentes:
+Para abordar los objetivos anteriores, en esta memoria se desarrolla la familia \CTTransformer (\textbf{Continuous Transformer}), adaptada específicamente a series de tiempo no equiespaciadas. De forma muy resumida, la propuesta se estructura en los siguientes componentes:
 
 \begin{itemize}
     \item Un \textbf{módulo de embedding de valores} que proyecta las variables de entrada (por ejemplo, mediciones de sensores) desde un espacio de dimensión $d_{\text{in}}$ a un espacio latente de dimensión $d_{\text{model}}$, común a todo el modelo.
-    \item Un \textbf{encoding temporal continuo} que recibe directamente los timestamps numéricos y construye vectores de dimensión $d_{\text{model}}$ para cada observación, utilizando una normalización en base a una escala de tiempo configurable y un esquema sinusoidal (o, alternativamente, un MLP) inspirado en el positional encoding clásico.
-    \item Un \textbf{embedding de flag de target} que diferencia explícitamente entre tokens de historia y tokens objetivo, permitiendo introducir un \textit{token target} en la secuencia con su timestamp objetivo, pero sin conocer aún su valor verdadero.
-    \item Un \textbf{encoder Transformer} compuesto por múltiples bloques de atención multi-cabeza y capas feed-forward, que opera sobre la secuencia completa (historia + token target), respetando opcionalmente una máscara causal.
-    \item Una \textbf{cabeza de regresión} que toma la representación latente del token target a la salida del encoder y la proyecta al espacio de salida, entregando la predicción para el valor de interés en el timestamp objetivo.
+    \item Un \textbf{encoding temporal continuo} que recibe directamente los timestamps numéricos y construye vectores de dimensión $d_{\text{model}}$ para cada observación, utilizando una normalización en base a una escala de tiempo configurable y un esquema sinusoidal continuo, con variantes aprendibles basadas en Time2Vec.
+    \item Un \textbf{identificador de rol historia--objetivo} que diferencia explícitamente entre tokens observados y tokens de predicción, permitiendo introducir uno o más tokens objetivo en la secuencia con sus timestamps correspondientes, pero sin conocer aún sus valores verdaderos.
+    \item Una \textbf{arquitectura base con encoder Transformer}, compuesta por múltiples bloques de atención multi-cabeza y capas feed-forward, que opera sobre la secuencia completa (historia + tokens objetivo), respetando opcionalmente una máscara causal.
+    \item Variantes \textbf{encoder--decoder}, donde la historia se codifica por separado y los tokens objetivo se procesan en un decoder con atención cruzada hacia la memoria histórica.
+    \item Una \textbf{cabeza de regresión} que toma las representaciones latentes de los tokens objetivo y las proyecta al espacio de salida.
 \end{itemize}
 
 Sobre esta arquitectura se construye un conjunto de herramientas de datos y entrenamiento que permiten:
 
 \begin{itemize}
-    \item Generar ventanas de historia y targets desde una serie temporal ordenada, respetando la naturaleza no equiespaciada de los timestamps.
-    \item Entrenar el modelo con historias de longitud fija o variable, y con uno o varios offsets de predicción posibles, lo que posibilita estudiar el efecto del horizonte de predicción sobre el desempeño.
-    \item Evaluar el modelo mediante un conjunto de métricas de regresión estándar y analizar su comportamiento tanto en datos sintéticos como en datos reales.
+    \item Generar ventanas de historia y objetivos desde una serie temporal ordenada, respetando la naturaleza no equiespaciada de los timestamps.
+    \item Entrenar el modelo con historias de longitud variable y múltiples offsets de predicción, lo que permite estudiar el efecto del horizonte sobre el desempeño.
+    \item Evaluar el modelo mediante un benchmark reanudable con métricas de regresión estándar y registro de costo computacional.
 \end{itemize}
 
-Los fundamentos matemáticos de redes neuronales, funciones de activación, algoritmos de optimización (incluido Adam) y aspectos generales de entrenamiento de modelos de aprendizaje profundo se desarrollan en un anexo independiente, con el fin de mantener el cuerpo principal de la memoria enfocado en la propuesta específica y sus resultados, sin perder rigurosidad en la presentación de los conceptos básicos.
+Los fundamentos matemáticos de redes neuronales, funciones de activación, algoritmos de optimización y aspectos generales de entrenamiento de modelos de aprendizaje profundo se desarrollan en anexos independientes, con el fin de mantener el cuerpo principal de la memoria enfocado en la propuesta específica y sus resultados, sin perder rigurosidad en la presentación de los conceptos básicos.
 
 \section{Alcances y limitaciones}
 
@@ -123,9 +124,11 @@ Este trabajo se concentra en el problema de \textbf{predicción puntual} de seri
 
 \hfill
 
-Asimismo, la evaluación se realiza sobre un conjunto acotado de datasets, que incluyen datos sintéticos controlados y al menos un caso de datos reales representativos de un sistema físico o de operación. El objetivo no es presentar un modelo universalmente óptimo para todas las series de tiempo no equiespaciadas, sino estudiar en detalle la viabilidad y el comportamiento de la arquitectura propuesta en escenarios concretos.
+Asimismo, la evaluación está diseñada para cubrir 5 datasets reales procesados. El objetivo no es presentar un modelo universalmente óptimo para todas las series de tiempo no equiespaciadas, sino estudiar en detalle la viabilidad y el comportamiento de la arquitectura \CTTransformer\ en escenarios concretos.
 
 Por último, si bien la implementación se realiza sobre la biblioteca PyTorch y se incluye un pipeline completo de entrenamiento e inferencia, aspectos de despliegue en producción, integración con sistemas de monitoreo en tiempo real o escalamiento distribuido quedan fuera del alcance de esta memoria y se mencionan únicamente como posibles líneas de trabajo futuro.
+
+Todo el proyecto se deja alojado en un \href{https://github.com/konnits/Memoria}{repositorio público de GitHub}, con el fin de facilitar la reproducibilidad, la colaboración y la extensión por parte de otros investigadores interesados en el tema.
 
 \section{Estructura de la memoria}
 
@@ -135,10 +138,10 @@ El resto de este documento se organiza de la siguiente manera:
     \item En el \textbf{Capítulo~\ref{cap:estado-del-arte}} se presenta el estado del arte en modelos de series de tiempo, revisando tanto enfoques clásicos como arquitecturas de aprendizaje profundo, con énfasis en Transformers y en técnicas para manejar series no equiespaciadas.
     \item En el \textbf{Capítulo~\ref{cap:series-tiempo}} se formaliza el problema de predicción de series de tiempo no equiespaciadas, se introduce la notación utilizada y se describen los datasets empleados en los experimentos.
     \item En el \textbf{Capítulo~\ref{cap:transformers-series-tiempo}} se revisan los componentes principales de la arquitectura Transformer aplicada a series de tiempo equiespaciadas, destacando el rol del positional encoding y las particularidades del uso de atención en este contexto.
-    \item En el \textbf{Capítulo~\ref{cap:modelo-no-equiespaciado}} se detalla la propuesta de modelo Transformer para series no equiespaciadas, incluyendo el diseño del encoding temporal continuo, la construcción de secuencias con token target y la integración con el encoder Transformer y la cabeza de salida.
+    \item En el \textbf{Capítulo~\ref{cap:modelo-no-equiespaciado}} se detalla la familia \CTTransformer, incluyendo el diseño del encoding temporal continuo, la construcción de secuencias con tokens objetivo, la arquitectura base con encoder y la variante encoder--decoder.
     \item En el \textbf{Capítulo~\ref{cap:experimentos}} se describe la metodología experimental, los escenarios considerados y los procedimientos de entrenamiento y evaluación utilizados.
-    \item En el \textbf{Capítulo~\ref{cap:resultados}} se presentan y analizan los resultados obtenidos, comparando el modelo propuesto con distintos baselines y discutiendo las implicancias de los hallazgos.
-    \item Finalmente, en el \textbf{Capítulo~\ref{cap:conclusiones}} se resumen las conclusiones principales, se evalúa el cumplimiento de los objetivos planteados y se proponen líneas de trabajo futuro.
+    \item En el \textbf{Capítulo~\ref{cap:resultados}} se presentan y analizan los resultados, comparando \CTTransformer\ con distintos baselines.
+    \item Finalmente, en el \textbf{Capítulo~\ref{cap:conclusiones}} se resumen las conclusiones, se explicitan las limitaciones del estado actual y se proponen líneas de trabajo futuro.
 \end{itemize}
 
 Los anexos incluyen una exposición más detallada de los fundamentos de redes neuronales y algoritmos de optimización utilizados, así como información técnica adicional sobre la implementación y resultados complementarios de los experimentos.
