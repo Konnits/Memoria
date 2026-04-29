@@ -87,3 +87,5 @@ latex/build/
 data/raw/
 data/processed/
 # experiments/**/checkpoints/
+data/pamap2
+*.pdf
