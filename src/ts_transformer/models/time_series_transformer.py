@@ -49,6 +49,7 @@ class TimeSeriesTransformerConfig:
     use_target_flag_embedding: bool = True
     validate_inputs: bool = True
     decoder_num_layers: Optional[int] = None
+    temporal_bias_layers: Optional[int] = None
 
 
 class TimeSeriesTransformer(nn.Module):
@@ -293,7 +294,13 @@ class TimeSeriesTransformer(nn.Module):
 
         # Temporal Attention Bias (si está habilitado)
         temporal_bias = None
-        if self.use_temporal_attn_bias and self.temporal_attn_bias is not None:
+        temporal_bias_layers = self.config.temporal_bias_layers
+        temporal_bias_enabled = (
+            self.use_temporal_attn_bias
+            and self.temporal_attn_bias is not None
+            and (temporal_bias_layers is None or int(temporal_bias_layers) > 0)
+        )
+        if temporal_bias_enabled:
             # Usar timestamps normalizados para el bias
             tau = compute_relative_time_deltas(
                 input_timestamps,
@@ -302,7 +309,7 @@ class TimeSeriesTransformer(nn.Module):
                 lengths=lengths,
                 time_transform="linear",
             )
-            temporal_bias = self.temporal_attn_bias(tau)
+            temporal_bias = self.temporal_attn_bias(tau, dtype=value_emb.dtype)
 
         # Encoder Transformer
         if return_all_layers:
@@ -311,6 +318,7 @@ class TimeSeriesTransformer(nn.Module):
                 key_padding_mask=padding_mask,
                 attn_mask=attn_mask,
                 temporal_bias=temporal_bias,
+                temporal_bias_layers=temporal_bias_layers,
                 is_causal=is_causal,
                 return_all_layers=True,
             )
@@ -320,6 +328,7 @@ class TimeSeriesTransformer(nn.Module):
                 key_padding_mask=padding_mask,
                 attn_mask=attn_mask,
                 temporal_bias=temporal_bias,
+                temporal_bias_layers=temporal_bias_layers,
                 is_causal=is_causal,
                 return_all_layers=False,
             )
