@@ -133,6 +133,7 @@ class TransformerEncoder(nn.Module):
         key_padding_mask: Optional[torch.Tensor] = None,
         attn_mask: Optional[torch.Tensor] = None,
         temporal_bias: Optional[torch.Tensor] = None,
+        temporal_bias_layers: Optional[int] = None,
         is_causal: bool = False,
         return_all_layers: bool = False,
     ) -> torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
@@ -161,12 +162,18 @@ class TransformerEncoder(nn.Module):
         """
         all_layers = []
 
-        for layer in self.layers:
+        for layer_idx, layer in enumerate(self.layers):
+            layer_temporal_bias = temporal_bias
+            if temporal_bias is not None and temporal_bias_layers is not None:
+                layer_temporal_bias = (
+                    temporal_bias if layer_idx < max(0, int(temporal_bias_layers))
+                    else None
+                )
             x = layer(
                 x,
                 key_padding_mask=key_padding_mask,
                 attn_mask=attn_mask,
-                temporal_bias=temporal_bias,
+                temporal_bias=layer_temporal_bias,
                 is_causal=is_causal,
             )
             if return_all_layers:
