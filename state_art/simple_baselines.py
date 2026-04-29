@@ -281,10 +281,57 @@ class OrdinalPositionalEncoding(nn.Module):
         self,
         timestamps: torch.Tensor,
         padding_mask: Optional[torch.Tensor] = None,
+        lengths: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if timestamps.ndim != 2:
+            raise ValueError(
+                f"OrdinalPositionalEncoding espera timestamps 2D [B, L], "
+                f"pero recibió {timestamps.shape}."
+            )
+
         B, L = timestamps.shape
         pe_buffer = cast(torch.Tensor, self.pe_buffer)
-        return pe_buffer[:, :L, :].expand(B, -1, -1)
+        if L > pe_buffer.shape[1]:
+            raise ValueError(
+                f"Longitud de secuencia {L} excede max_len={pe_buffer.shape[1]}."
+            )
+
+        if lengths is not None:
+            if lengths.ndim != 1 or lengths.shape[0] != B:
+                raise ValueError(
+                    "lengths debe tener shape [B]. "
+                    f"timestamps={tuple(timestamps.shape)}, lengths={tuple(lengths.shape)}"
+                )
+            lengths = lengths.to(device=timestamps.device, dtype=torch.long)
+            if torch.any((lengths <= 0) | (lengths > L)):
+                raise ValueError(
+                    f"lengths debe estar en el rango [1, {L}], "
+                    f"pero se obtuvo {lengths.tolist()}."
+                )
+            first_valid_idx = L - lengths
+            positions = (
+                torch.arange(L, device=timestamps.device).unsqueeze(0)
+                - first_valid_idx.unsqueeze(1)
+            )
+            positions = positions.clamp_min(0)
+        elif padding_mask is not None:
+            if padding_mask.shape != timestamps.shape:
+                raise ValueError(
+                    "padding_mask debe tener la misma shape que timestamps. "
+                    f"timestamps={tuple(timestamps.shape)}, padding_mask={tuple(padding_mask.shape)}"
+                )
+            valid_mask = ~padding_mask
+            if not torch.all(valid_mask.any(dim=1)):
+                raise ValueError("Cada secuencia debe tener al menos un token válido.")
+            positions = valid_mask.to(torch.long).cumsum(dim=1) - 1
+            positions = positions.clamp_min(0)
+        else:
+            positions = (
+                torch.arange(L, device=timestamps.device).unsqueeze(0).expand(B, -1)
+            )
+
+        pe_table = pe_buffer.squeeze(0)
+        return pe_table.index_select(0, positions.reshape(-1)).view(B, L, self.d_model)
 
 
 class NoTargetTokenTransformer(nn.Module):
