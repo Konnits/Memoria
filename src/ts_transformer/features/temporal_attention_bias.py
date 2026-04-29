@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 from torch import nn
 
@@ -60,7 +62,11 @@ class TemporalAttentionBias(nn.Module):
         )
         self.log_tau = nn.Parameter(init_tau.log())
 
-    def forward(self, timestamps: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        timestamps: torch.Tensor,
+        dtype: Optional[torch.dtype] = None,
+    ) -> torch.Tensor:
         """
         Parameters
         ----------
@@ -72,14 +78,23 @@ class TemporalAttentionBias(nn.Module):
         bias:
             Tensor [B, num_heads, L, L] con el sesgo temporal aditivo.
         """
+        output_dtype = dtype if dtype is not None else timestamps.dtype
+        compute_dtype = (
+            output_dtype
+            if output_dtype in {torch.float16, torch.bfloat16, torch.float32}
+            else torch.float32
+        )
+
         # Diferencias temporales absolutas: |t_i - t_j|
         # timestamps: [B, L] -> dt: [B, L, L]
-        dt = (timestamps.unsqueeze(-1) - timestamps.unsqueeze(-2)).abs().to(torch.float32)
+        dt = (
+            timestamps.unsqueeze(-1) - timestamps.unsqueeze(-2)
+        ).abs().to(compute_dtype)
 
         # Escalas aprendidas por cabeza: [num_heads]
         # Clamp log_tau a [-5, 5] para mantener tau en [~0.007, ~148],
         # evitando que tau → 0 cause bias → -inf (y NaN en softmax).
-        tau = self.log_tau.clamp(-5.0, 5.0).exp()  # positivo garantizado
+        tau = self.log_tau.clamp(-5.0, 5.0).exp().to(compute_dtype)  # positivo garantizado
 
         # Penalización logarítmica suave: conserva contexto lejano en el arranque
         # y evita castigos excesivos cuando la ventana temporal es larga.
@@ -89,6 +104,6 @@ class TemporalAttentionBias(nn.Module):
         bias = -torch.log1p(scaled_dt)
 
         # Clamp final para evitar valores extremos en el softmax
-        bias = bias.clamp(-12.0, 0.0)
+        bias = bias.clamp(-12.0, 0.0).to(output_dtype)
 
         return bias  # [B, H, L, L]
