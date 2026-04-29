@@ -404,11 +404,13 @@ def build_models(
         time_encoding_mode: str,
         use_temporal_attn_bias: bool,
         time_transform: str | None = None,
+        temporal_bias_layers: int | None = None,
     ):
         """Crea una copia del config con la variante temporal solicitada."""
         cfg = copy.deepcopy(base_cfg)
         cfg.time_encoding_mode = time_encoding_mode
         cfg.use_temporal_attn_bias = use_temporal_attn_bias
+        cfg.temporal_bias_layers = temporal_bias_layers
         if time_transform is not None:
             cfg.time_transform = time_transform
         return cfg
@@ -437,6 +439,7 @@ def build_models(
             cfg_small,
             time_encoding_mode="sinusoidal",
             use_temporal_attn_bias=True,
+            temporal_bias_layers=1,
         )
     )
     trainable["Custom-TempBias-Small"] = True
@@ -445,6 +448,7 @@ def build_models(
             model_cfg,
             time_encoding_mode="sinusoidal",
             use_temporal_attn_bias=True,
+            temporal_bias_layers=1,
         )
     )
     trainable["Custom-TempBias"] = True
@@ -455,6 +459,7 @@ def build_models(
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=True,
             time_transform="linear",
+            temporal_bias_layers=1,
         )
     )
     trainable["Custom-Time2VecBias-Small"] = True
@@ -464,6 +469,7 @@ def build_models(
             time_encoding_mode="time2vec",
             use_temporal_attn_bias=True,
             time_transform="linear",
+            temporal_bias_layers=1,
         )
     )
     trainable["Custom-Time2VecBias"] = True
