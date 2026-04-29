@@ -5,6 +5,8 @@ from typing import Callable
 import torch
 from torch import nn
 
+from .dilate_loss import DILATELoss
+
 
 def mse_loss() -> nn.Module:
     """L2 / Mean Squared Error por defecto para regresión."""
@@ -33,6 +35,7 @@ def get_loss_fn(name: str, **kwargs) -> nn.Module:
         - "mse"
         - "mae"
         - "huber"
+        - "dilate"
     kwargs:
         Parámetros adicionales (por ejemplo delta para huber).
 
@@ -49,5 +52,12 @@ def get_loss_fn(name: str, **kwargs) -> nn.Module:
     elif name == "huber":
         delta = float(kwargs.get("delta", 1.0))
         return huber_loss(delta=delta)
+    elif name == "dilate":
+        return DILATELoss(
+            alpha=float(kwargs.get("alpha", 0.5)),
+            gamma=float(kwargs.get("gamma", 0.01)),
+            normalize_shape=bool(kwargs.get("normalize_shape", True)),
+            normalize_temporal=bool(kwargs.get("normalize_temporal", True)),
+        )
     else:
         raise ValueError(f"Función de pérdida no soportada: {name}")
