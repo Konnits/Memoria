@@ -153,6 +153,11 @@ def load_model_config(path: str) -> TimeSeriesTransformerConfig:
             if "decoder_num_layers" in cfg and cfg["decoder_num_layers"] is not None
             else None
         ),
+        temporal_bias_layers=(
+            int(cfg["temporal_bias_layers"])
+            if "temporal_bias_layers" in cfg and cfg["temporal_bias_layers"] is not None
+            else None
+        ),
     )
 
 
