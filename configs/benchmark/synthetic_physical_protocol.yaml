@@ -1,0 +1,182 @@
+schema_version: 1
+protocol_status: exploratory_physical_time_v1
+execution_config: configs/benchmark/physical_models.yaml
+
+relationship_to_legacy:
+  legacy_protocol: configs/benchmark/synthetic_confirmatory_protocol.yaml
+  legacy_protocol_is_frozen: true
+  scores_are_directly_comparable: false
+  reason: >-
+    El protocolo legacy define historia y horizonte en cantidad de eventos. Este
+    protocolo los define en unidades físicas, aleatoriza los slots de consulta y
+    usa una referencia latente limpia separada y consultas independientes del
+    patrón de llegada de eventos.
+
+scope:
+  data_domain: synthetic_only
+  representation: irregular_event_streams_without_fixed_grid_resampling
+  real_world_validation: false
+
+data:
+  root: data
+  kinds: [univariate, multivariate]
+  presets:
+    - regular_control
+    - renewal
+    - bursty
+    - long_gaps
+    - informative
+    - nonstationary
+    - noisy
+    - hard_mixed
+  observations: observations.parquet
+  targets: truth.parquet
+  splits: [train, validation, test]
+  target_column: clean_value
+  timestamp_contract:
+    absolute_storage_and_selection: float64
+    model_input: float32_after_per_window_recentering
+    cast_absolute_timestamps_to_float32: forbidden
+
+task:
+  history:
+    duration: 8.0
+    forecast_origins: uniform_truth_time_grid_independent_of_event_density
+    empty_history_policy: discard_without_synthetic_observation
+    discard_accounting: mutually_exclusive_first_matching_cause
+    discard_causes:
+      - insufficient_history_coverage
+      - origin_after_last_observation
+      - empty_history
+      - target_before_available_range
+      - target_after_available_range
+    max_events_by_kind:
+      univariate: 256
+      multivariate: 512
+    subsampling: uniform_time
+  queries:
+    training_horizon_range: [0.25, 8.0]
+    training_horizon_sampling: log_uniform
+    queries_per_training_sample: 4
+    evaluation_horizons: [0.25, 1.0, 3.0, 8.0]
+    randomize_order: true
+    target_match_mode: linear
+    interpolation_source: clean_truth_per_channel
+  score_space: standardized_with_train_statistics
+
+models:
+  proposed:
+    - Custom-QueryCross
+    - Continuous-Basis
+  temporal_ablations:
+    - Custom-QueryCross-NoTime
+    - Custom-QueryCross-QueryOnly
+    - Custom-QueryCross-CTSSM
+    - Continuous-Basis-CTSSM
+  probabilistic:
+    - Custom-QueryCross-Gaussian
+    - Continuous-Basis-Gaussian
+  baselines:
+    - Persistence
+  runner_aliases:
+    QueryCross: Custom-QueryCross
+    QueryCross-Gaussian: Custom-QueryCross-Gaussian
+    NoTime: Custom-QueryCross-NoTime
+    QueryOnly: Custom-QueryCross-QueryOnly
+    CTSSM: Custom-QueryCross-CTSSM
+    BasisDecoder: Continuous-Basis
+    BasisDecoder-Gaussian: Continuous-Basis-Gaussian
+    BasisDecoder-CTSSM: Continuous-Basis-CTSSM
+
+query_cross_contract:
+  history_only_encoder: true
+  independent_target_queries: true
+  query_slot_embedding: false
+  relative_lag_bias:
+    monotonic_decay: true
+    fourier_basis: true
+    rbf_basis: true
+  temporal_film_features:
+    - global_gap
+    - per_sensor_age
+    - local_sampling_intensity_proxy
+    - log1p_represented_observation_count
+  sensor_relation_bias: true
+  last_value_residual: true
+  ctssm:
+    solver_free: true
+    stable_diagonal_transition: true
+    associative_parallel_scan: true
+
+continuous_basis_contract:
+  history_encoded_once: true
+  query_slot_embedding: false
+  horizon_definition: target_time_minus_last_history_time
+  bases: [signed_log_trend, multiscale_rbf, multiscale_fourier]
+  point_and_gaussian_heads: true
+
+training:
+  model_seeds: [42, 84, 126]
+  checkpoint_selection: val_rmse
+  test_split_used_for_selection: false
+  paired_initialization_for_ablations: true
+  recommended_smoke_epochs: 2
+
+evaluation:
+  point_metrics: [rmse, mae]
+  probabilistic_metrics:
+    - nll
+    - crps
+    - coverage_90
+    - coverage_95
+    - predictive_scale
+  stratify_by:
+    - physical_horizon
+    - max_history_gap
+    - history_density
+    - last_observation_age
+    - channel_density_within_channel_quantiles
+    - channel_max_gap_within_channel_quantiles
+    - channel_last_age_within_channel_quantiles
+  report_levels: [aggregate, kind, preset, dataset, channel, temporal_stratum]
+  neural_ablations:
+    - real
+    - real_no_count_feature
+    - all_equal
+    - all_equal_no_count_feature
+    - permuted_gaps
+    - regular_grid
+
+identifiability_gate:
+  config: configs/benchmark/temporal_identifiability.yaml
+  runner: scripts/temporal_identifiability_benchmark.py
+  controls: [Persistence, Ordinal, ExplicitHorizon]
+  required_timestamp_ablations:
+    - real
+    - all_equal
+    - permuted_gaps
+    - regular_grid
+    - ordinal
+    - query_only
+    - history_only
+
+runners:
+  neural: scripts/benchmark_physical_models.py
+  identifiability: scripts/temporal_identifiability_benchmark.py
+  hyperparameter_search: scripts/tune_physical_optuna.py
+  conda_environment: memoria
+
+success_checks:
+  - histories_cover_equal_physical_duration
+  - forecast_origins_are_independent_of_event_arrival_times
+  - queries_are_not_sorted_by_horizon
+  - query_slot_is_not_a_proxy_for_physical_horizon
+  - targets_come_from_truth_not_observation_spacing
+  - timestamp_precision_audit_has_no_relative_time_collapse
+  - metrics_are_reported_by_horizon_gap_and_density
+  - no_time_and_query_only_are_compared_with_the_full_temporal_model
+
+claim_boundary: >-
+  Los resultados permiten evaluar identificación y uso de tiempo físico en los
+  procesos sintéticos incluidos. No establecen validez externa sobre datos
+  reales ni equivalencia con scores del protocolo legacy por offsets de evento.

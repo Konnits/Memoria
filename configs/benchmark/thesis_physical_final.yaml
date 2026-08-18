@@ -1,0 +1,165 @@
+schema_version: 1
+protocol_status: thesis_physical_evaluation_v1_frozen
+output_dir: experiments/thesis_physical_benchmark
+claim_boundary: retrospective_evaluation_on_previously_generated_synthetic_data_not_external_validation
+
+# Este archivo fija el protocolo final. El runner no ejecuta ni infiere una
+# búsqueda de hiperparámetros; cualquier cambio crea una nueva huella SHA-256.
+hyperparameter_policy: fixed_before_final_execution
+
+data:
+  root: data
+  kinds: [univariate, multivariate]
+  history_source: observations.parquet
+  target_source: truth.parquet
+  target_value: clean_value
+  timestamp_dtype: float64_until_window_relative_normalization
+
+dataset_cohorts:
+  main:
+    generator_seed: 2026
+    output_subdir: main
+    expected_units: 16
+    units:
+      - {kind: univariate, preset: bursty, dataset_id: bursty_0000}
+      - {kind: multivariate, preset: bursty, dataset_id: bursty_0000}
+      - {kind: univariate, preset: hard_mixed, dataset_id: hard_mixed_0000}
+      - {kind: multivariate, preset: hard_mixed, dataset_id: hard_mixed_0000}
+      - {kind: univariate, preset: informative, dataset_id: informative_0000}
+      - {kind: multivariate, preset: informative, dataset_id: informative_0000}
+      - {kind: univariate, preset: long_gaps, dataset_id: long_gaps_0000}
+      - {kind: multivariate, preset: long_gaps, dataset_id: long_gaps_0000}
+      - {kind: univariate, preset: noisy, dataset_id: noisy_0000}
+      - {kind: multivariate, preset: noisy, dataset_id: noisy_0000}
+      - {kind: univariate, preset: nonstationary, dataset_id: nonstationary_0000}
+      - {kind: multivariate, preset: nonstationary, dataset_id: nonstationary_0000}
+      - {kind: univariate, preset: regular_control, dataset_id: regular_control_0000}
+      - {kind: multivariate, preset: regular_control, dataset_id: regular_control_0000}
+      - {kind: univariate, preset: renewal, dataset_id: renewal_0000}
+      - {kind: multivariate, preset: renewal, dataset_id: renewal_0000}
+  stress:
+    generator_seed: 3031
+    output_subdir: stress_gseed3031
+    expected_units: 2
+    units:
+      - {kind: univariate, preset: long_gaps, dataset_id: long_gaps_gseed3031_0000}
+      - {kind: multivariate, preset: long_gaps, dataset_id: long_gaps_gseed3031_0000}
+
+models:
+  - QueryCross
+  - QueryCross-Gaussian
+  - BasisDecoder
+  - BasisDecoder-Gaussian
+  - BasisDecoder-CTSSM
+  - NoTime
+  - QueryOnly
+  - CTSSM
+  - Persistence
+
+task:
+  horizons: [0.25, 1.0, 3.0, 8.0]
+  train_horizon_range: [0.25, 8.0]
+  train_horizon_sampling: log_uniform
+  queries_per_sample: 4
+  history_duration: 8.0
+  forecast_origin_empty_history_policy: discard_without_synthetic_observation
+  forecast_origin_discard_accounting: mutually_exclusive_first_matching_cause
+  max_history_events_univariate: 256
+  max_history_events_multivariate: 512
+  history_subsampling: uniform_time
+  cache_deterministic_history: true
+  target_match_mode: linear
+  randomize_query_order: true
+  timestamp_precision: float64_until_window_relative_normalization
+
+sampling:
+  protocol_seed: 2026
+  max_train_samples: 2048
+  max_val_samples: 512
+  max_test_samples: 512
+
+model:
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  cross_layers: 2
+  dim_feedforward: 256
+  dropout: 0.1
+  external_temporal_features: [log1p_represented_observation_count]
+
+training:
+  seeds: [42, 84, 126]
+  deterministic: true
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.0005
+  weight_decay: 0.001
+  early_stopping_patience: 5
+  device: cuda
+  num_workers: 0
+  optimizer: adamw
+  scheduler: cosine
+  checkpoint_selection:
+    point: val_rmse
+    gaussian: val_nll
+
+evaluation:
+  timestamp_ablations:
+    - real
+    - real_no_count_feature
+    - all_equal
+    - all_equal_no_count_feature
+    - permuted_gaps
+    - regular_grid
+    - query_only
+    - history_only
+  metrics: [rmse, mae, bias, gaussian_nll, gaussian_crps, coverage_90, coverage_95]
+  metric_spaces: [standardized, original]
+  stratify_by: [physical_horizon, channel, density, max_gap, last_observation_age, channel_density, channel_max_gap, channel_last_age]
+  save_predictions: true
+
+identifiability:
+  enabled: true
+  config: configs/benchmark/temporal_identifiability.yaml
+
+execution:
+  require_cuda: true
+  expected_gpu_name_contains: RTX 5090
+  minimum_gpu_memory_gib: 24
+  minimum_free_gpu_memory_gib: 20
+  num_workers_required: 0
+
+preflight:
+  required_conda_environment: memoria
+  require_clean_worktree: true
+  full_pytest: true
+  smoke_focal_tests:
+    - tests/test_thesis_physical_benchmark.py
+    - tests/test_temporal_identifiability_protocol.py
+    - tests/test_physical_models_runner.py
+    - tests/test_physical_time_dataset.py
+  require_git_diff_check: true
+
+smoke:
+  cohort: main
+  presets: [long_gaps]
+  seeds: [42]
+  epochs: 1
+  max_train_samples: 8
+  max_val_samples: 4
+  max_test_samples: 4
+  max_observation_rows_per_split: 2000
+  max_train_anchors: 4
+  max_eval_anchors: 2
+
+reporting:
+  aggregation_order:
+    - seeds_to_dataset_unit
+    - paired_kinds_to_preset
+    - macro_average_across_presets
+  require_complete_kind_pairs: true
+  latex_tables:
+    - protocol_summary.tex
+    - model_results.tex
+    - temporal_ablations.tex
+    - gaussian_calibration.tex

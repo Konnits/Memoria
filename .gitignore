@@ -82,15 +82,21 @@ runs/
 *.synctex.gz
 *.toc
 latex/build/
+/tmp/
 
 # Optional data/experiment outputs (uncomment if needed)
 data/raw/
 data/processed/
 # experiments/**/checkpoints/
+experiments/temporal_identifiability*/
+experiments/physical_models*/
+experiments/optuna_physical*/
+experiments/*_smoke*/
+experiments/thesis_physical_benchmark*/
 data/pamap2
 *.pdf
 
-data/
+/data/
 
 *.csv
 *.pt

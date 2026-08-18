@@ -1,0 +1,68 @@
+schema_version: 1
+protocol_status: exploratory_physical_time_v1
+output_dir: experiments/physical_models
+
+data:
+  root: data
+  kinds: [univariate, multivariate]
+  history_source: observations.parquet
+  target_source: truth.parquet
+  target_value: clean_value
+
+models: [QueryCross, QueryCross-Gaussian, BasisDecoder, BasisDecoder-Gaussian, BasisDecoder-CTSSM, NoTime, QueryOnly, CTSSM, Persistence]
+
+task:
+  horizons: [0.25, 1.0, 3.0, 8.0]
+  train_horizon_range: [0.25, 8.0]
+  train_horizon_sampling: log_uniform
+  queries_per_sample: 4
+  history_duration: 8.0
+  forecast_origin_empty_history_policy: discard_without_synthetic_observation
+  forecast_origin_discard_accounting: mutually_exclusive_first_matching_cause
+  max_history_events_univariate: 256
+  max_history_events_multivariate: 512
+  history_subsampling: uniform_time
+  target_match_mode: linear
+  randomize_query_order: true
+  timestamp_precision: float64_until_window_relative_normalization
+
+sampling:
+  protocol_seed: 2026
+  max_train_samples: 2048
+  max_val_samples: 512
+  max_test_samples: 512
+
+model:
+  d_model: 64
+  num_heads: 4
+  num_layers: 2
+  cross_layers: 2
+  dim_feedforward: 256
+  dropout: 0.1
+  external_temporal_features: [log1p_represented_observation_count]
+
+training:
+  seeds: [42]
+  epochs: 20
+  batch_size: 8
+  learning_rate: 0.0005
+  weight_decay: 0.001
+  early_stopping_patience: 5
+  device: auto
+  num_workers: 0
+  optimizer: adamw
+  scheduler: cosine
+  checkpoint_selection: val_rmse
+
+evaluation:
+  timestamp_ablations:
+    - real
+    - real_no_count_feature
+    - all_equal
+    - all_equal_no_count_feature
+    - permuted_gaps
+    - regular_grid
+  metrics: [rmse, mae, bias, gaussian_nll, gaussian_crps, coverage_90, coverage_95]
+  metric_spaces: [standardized, original]
+  stratify_by: [physical_horizon, channel, density, max_gap, last_observation_age, channel_density, channel_max_gap, channel_last_age]
+  save_predictions: true

@@ -1,0 +1,61 @@
+schema_version: 1
+protocol_status: exploratory_identifiability_v1
+seed: 2026
+
+data:
+  root: data
+  kinds: [univariate, multivariate]
+  source_values: observations.parquet
+  target_values: truth.parquet
+  timestamp_dtype: float64_until_window_relative_normalization
+
+task:
+  train_split: train
+  eval_split: test
+  history_duration: 8.0
+  slope_lookback: 0.25
+  train_anchors: 64
+  eval_anchors: 32
+  queries_per_anchor: 4
+  horizon_range: [0.25, 8.0]
+  horizon_sampling: log_uniform
+  randomize_query_slots: true
+  target_interpolation: linear_on_clean_truth
+
+controls:
+  models: [Persistence, Ordinal, ExplicitHorizon]
+  ridge_lambda: 0.001
+  history_values: clean_truth_oracle
+  ordinal_contract: last_value_and_query_slot_without_physical_time
+  explicit_horizon_contract: continuous_physical_horizon
+
+diagnostics:
+  timestamp_ablations:
+    - real
+    - all_equal
+    - permuted_gaps
+    - regular_grid
+    - ordinal
+    - query_only
+    - history_only
+  precision_rows_per_row_group: 50000
+  max_ablation_history_points: 512
+  strata_bins: 4
+  stratify_by: [horizon, max_gap, density]
+
+outputs:
+  examples: counterfactual_examples.parquet
+  predictions: control_predictions.parquet
+  aggregate_metrics: control_metrics.csv
+  dataset_metrics: control_metrics_by_dataset.csv
+  stratified_metrics: metrics_by_temporal_stratum.csv
+  timestamp_precision: timestamp_precision.csv
+  ablation_manifest: timestamp_ablation_manifest.csv
+  metadata: run_metadata.json
+
+success_checks:
+  - every_anchor_has_multiple_physical_query_times
+  - query_slot_is_not_a_deterministic_function_of_horizon
+  - absolute_float32_and_relative_float32_precision_are_reported
+  - metrics_are_stratified_by_horizon_gap_and_density
+  - timestamp_corruptions_preserve_paired_values_and_targets

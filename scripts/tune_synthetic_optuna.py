@@ -18,6 +18,7 @@ import gc
 import json
 from dataclasses import asdict
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
@@ -26,13 +27,24 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Subset
 
-from benchmark_synthetic import (
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+if str(REPOSITORY_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
+
+from scripts.benchmark_synthetic import (
     AutoregressiveTrainer,
     add_autoregressive_train_loader,
     prepare_data_from_arrays,
     read_observations,
 )
-from ts_transformer.models import TimeSeriesEncoderDecoder, TimeSeriesTransformer
+from ts_transformer.models import (
+    TimeSeriesEncoderDecoder,
+    TimeSeriesQueryCrossAttention,
+    TimeSeriesTransformer,
+)
 from ts_transformer.training import Trainer
 from ts_transformer.utils import (
     load_data_config,
@@ -42,7 +54,7 @@ from ts_transformer.utils import (
 )
 
 
-FAMILIES = ("Custom", "EncDec-AR")
+FAMILIES = ("Custom", "Custom-QueryCross", "EncDec-AR")
 DEFAULT_DATASETS = (
     "univariate:bursty",
     "univariate:long_gaps",
@@ -75,7 +87,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-config", default="configs/data/synthetic_benchmark.yaml")
     parser.add_argument("--model-config", default="configs/model/synthetic_transformer.yaml")
     parser.add_argument("--training-config", default="configs/training/synthetic_benchmark.yaml")
-    parser.add_argument("--output-dir", type=Path, default=Path("experiments/optuna_synthetic"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("experiments/optuna_synthetic_fixed_task"),
+    )
     parser.add_argument("--families", nargs="+", choices=FAMILIES, default=FAMILIES)
     parser.add_argument(
         "--datasets", nargs="+", default=DEFAULT_DATASETS,
@@ -90,6 +106,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-train-samples", type=int, default=4096)
     parser.add_argument("--max-val-samples", type=int, default=2048)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument(
+        "--horizon-profile",
+        choices=tuple(HORIZON_PROFILES),
+        default="standard_4",
+        help="Tarea fija para todo el estudio; nunca se samplea como hiperparámetro.",
+    )
+    parser.add_argument(
+        "--history-length",
+        type=int,
+        default=512,
+        help="Longitud histórica fija compartida por todos los trials.",
+    )
     parser.add_argument("--seed", type=int, default=2026)
     return parser.parse_args()
 
@@ -144,6 +172,9 @@ def sample_trial_config(
     base_model_cfg,
     base_training_cfg,
     base_data_cfg,
+    *,
+    horizon_profile: str = "standard_4",
+    history_length: int = 512,
 ):
     model_cfg = copy.deepcopy(base_model_cfg)
     training_cfg = copy.deepcopy(base_training_cfg)
@@ -161,13 +192,16 @@ def sample_trial_config(
     )
     model_cfg.time_transform = trial.suggest_categorical("time_transform", ("linear", "log1p"))
 
-    horizon_profile = trial.suggest_categorical("horizon_profile", tuple(HORIZON_PROFILES))
+    if horizon_profile not in HORIZON_PROFILES:
+        raise ValueError(f"horizon_profile desconocido: {horizon_profile}")
+    if history_length <= 0:
+        raise ValueError("history_length debe ser > 0.")
     offsets = HORIZON_PROFILES[horizon_profile]
     data_cfg.target_offset_choices = list(offsets)
     data_cfg.target_offset_min = None
     data_cfg.target_offset_max = None
     data_cfg.num_targets = len(offsets)
-    data_cfg.history_length = trial.suggest_categorical("history_length", (128, 256, 512))
+    data_cfg.history_length = int(history_length)
     data_cfg.min_history_length = None
 
     training_cfg.optimizer_config.lr = trial.suggest_float("learning_rate", 5e-5, 7e-4, log=True)
@@ -194,6 +228,8 @@ def instantiate_model(family: str, model_cfg, data: dict[str, Any]) -> torch.nn.
     config.time_scale = data["time_scale"]
     if family == "Custom":
         return TimeSeriesTransformer(config)
+    if family == "Custom-QueryCross":
+        return TimeSeriesQueryCrossAttention(config)
     return TimeSeriesEncoderDecoder(config)
 
 
@@ -221,7 +257,11 @@ class SyntheticObjective:
             self.base_model_cfg,
             self.base_training_cfg,
             self.base_data_cfg,
+            horizon_profile=self.args.horizon_profile,
+            history_length=self.args.history_length,
         )
+        trial.set_user_attr("fixed_horizon_profile", self.args.horizon_profile)
+        trial.set_user_attr("fixed_history_length", int(self.args.history_length))
         training_cfg.num_epochs = self.args.tuning_epochs
         training_cfg.early_stopping_patience = self.args.early_stopping_patience
         training_cfg.early_stopping_min_delta = 1e-4
@@ -343,7 +383,7 @@ def print_trial_progress(family: str):
 
 def main() -> None:
     args = parse_args()
-    if args.trials_per_family <= 0 or args.tuning_epochs <= 0:
+    if args.trials_per_family <= 0 or args.tuning_epochs <= 0 or args.history_length <= 0:
         raise ValueError("--trials-per-family y --tuning-epochs deben ser > 0.")
     specs = parse_dataset_specs(args.datasets)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -359,7 +399,8 @@ def main() -> None:
     print(f"Cached {len(raw_datasets)} tuning datasets in memory.")
 
     for family_index, family in enumerate(args.families):
-        study_name = f"synthetic_{family.lower().replace('-', '_')}"
+        task_name = f"{args.horizon_profile}_h{args.history_length}"
+        study_name = f"synthetic_{family.lower().replace('-', '_')}_{task_name}"
         sampler = optuna.samplers.TPESampler(seed=args.seed + family_index)
         pruner = optuna.pruners.MedianPruner(n_startup_trials=25, n_warmup_steps=2)
         study = optuna.create_study(
