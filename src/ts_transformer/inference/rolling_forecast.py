@@ -31,8 +31,8 @@ class RollingForecaster:
     Por ahora implementa un modo "fixed_history", donde:
     - Tienes un historial (past_values, past_timestamps).
     - Tienes una lista de timestamps objetivo futuros.
-    - Para cada timestamp, se llama a Predictor.predict_single con la misma
-      historia, y se devuelven todas las predicciones en un array.
+    - Los timestamps se evalúan como consultas independientes en un único batch,
+      reutilizando la misma historia sin introducir atención entre objetivos.
 
     Es una envoltura conveniente para no repetir el bucle.
     """

@@ -135,63 +135,14 @@ class Predictor:
             Vector [output_dim] con la predicción en target_timestamp,
             ya des-normalizada si se configuró target_scaler/value_scaler.
         """
-        # Convertir a tensores en CPU para compatibilidad con scalers
-        past_values_t = self._to_tensor_2d(past_values, name="past_values")
-        past_timestamps_t = self._to_tensor_1d(past_timestamps, name="past_timestamps")
-        target_timestamp_t = torch.as_tensor([float(target_timestamp)], dtype=torch.float32)
-        past_sensor_ids_t = self._normalize_sensor_ids(
-            past_sensor_ids,
-            seq_len=past_values_t.shape[0],
+        preds = self.predict_multi_targets(
+            past_values=past_values,
+            past_timestamps=past_timestamps,
+            target_timestamps=[target_timestamp],
+            past_sensor_ids=past_sensor_ids,
+            return_torch=True,
         )
-
-        # Aplicar escalado de valores (si corresponde)
-        if self.value_scaler is not None:
-            # Nuestro scaler acepta np o torch; usamos torch directamente.
-            past_values_t = self.value_scaler.transform(past_values_t)  # type: ignore[arg-type]
-
-        # Construir sample al estilo TimeSeriesDataset
-        # target_values es un placeholder (no se usa en inferencia)
-        dummy_target_values = torch.zeros((1, self.model.output_dim), dtype=torch.float32)
-        sample = {
-            "past_values": past_values_t,
-            "past_timestamps": past_timestamps_t,
-            "target_timestamp": target_timestamp_t,
-            "target_values": dummy_target_values,
-        }
-        if past_sensor_ids_t is not None:
-            sample["past_sensor_ids"] = past_sensor_ids_t
-
-        # Construir secuencia con token target (sin batch)
-        seq = self.sequence_builder(sample)
-        # Añadir dimensión de batch
-        input_values = seq["input_values"].unsqueeze(0).to(self.device)       # [1, L+1, input_dim]
-        input_timestamps = seq["input_timestamps"].unsqueeze(0).to(self.device)  # [1, L+1]
-        is_target_mask = seq["is_target_mask"].unsqueeze(0).to(self.device)   # [1, L+1]
-        input_sensor_ids = seq.get("input_sensor_ids", None)
-        if input_sensor_ids is not None:
-            input_sensor_ids = input_sensor_ids.unsqueeze(0).to(self.device)
-
-        # padding_mask = None (asumimos que no hay padding en inferencia single)
-        preds = self.model(
-            input_values=input_values,
-            input_timestamps=input_timestamps,
-            is_target_mask=is_target_mask,
-            input_sensor_ids=input_sensor_ids,
-            padding_mask=None,
-            attn_mask=None,
-            return_dict=False,
-        )  # [1, output_dim]
-
-        # Pasar a CPU para des-escalar
-        preds_cpu = preds.detach().cpu()  # [1, output_dim]
-        pred_1d = preds_cpu[0]  # [output_dim]
-
-        # Des-escalar
-        if self.target_scaler is not None:
-            pred_1d = self.target_scaler.inverse_transform(pred_1d)  # type: ignore[arg-type]
-        elif self.value_scaler is not None:
-            # Caso: el mismo scaler se aplicó a inputs y outputs
-            pred_1d = self.value_scaler.inverse_transform(pred_1d)  # type: ignore[arg-type]
+        pred_1d = preds[0]
 
         if return_torch:
             return pred_1d
@@ -209,7 +160,9 @@ class Predictor:
     ) -> ArrayLike:
         """
         Predice sobre múltiples timestamps objetivo, reutilizando el mismo
-        historial. Realiza una llamada al modelo por cada timestamp objetivo.
+        historial. Cada timestamp se representa como una consulta independiente
+        dentro del batch, de modo que el modelo se ejecuta una sola vez sin
+        introducir atención entre distintos objetivos.
 
         Parameters
         ----------
@@ -230,18 +183,97 @@ class Predictor:
         preds:
             Array [N_targets, output_dim] con las predicciones para cada timestamp.
         """
-        preds_list = []
-        for t_star in target_timestamps:
-            pred = self.predict_single(
-                past_values=past_values,
-                past_timestamps=past_timestamps,
-                past_sensor_ids=past_sensor_ids,
-                target_timestamp=t_star,
-                return_torch=True,
-            )  # [output_dim] tensor
-            preds_list.append(pred.unsqueeze(0))
+        # Convertir y validar una sola vez en CPU para mantener compatibilidad
+        # con los scalers del proyecto.
+        past_values_t = self._to_tensor_2d(past_values, name="past_values")
+        past_timestamps_t = self._to_tensor_1d(past_timestamps, name="past_timestamps")
+        if past_values_t.shape[0] != past_timestamps_t.shape[0]:
+            raise ValueError(
+                "past_values y past_timestamps deben tener la misma longitud. "
+                f"Se obtuvieron {past_values_t.shape[0]} y {past_timestamps_t.shape[0]}."
+            )
 
-        preds_all = torch.cat(preds_list, dim=0)  # [N_targets, output_dim]
+        target_timestamps_t = torch.as_tensor(
+            [float(timestamp) for timestamp in target_timestamps],
+            dtype=torch.float32,
+        )
+        if target_timestamps_t.numel() == 0:
+            raise ValueError("target_timestamps debe contener al menos un timestamp.")
+
+        past_sensor_ids_t = self._normalize_sensor_ids(
+            past_sensor_ids,
+            seq_len=past_values_t.shape[0],
+        )
+
+        if self.value_scaler is not None:
+            past_values_t = self.value_scaler.transform(past_values_t)  # type: ignore[arg-type]
+
+        # SequenceBuilder define la estructura exacta de una consulta (incluido
+        # el número de tokens por objetivo en modo evento). La construimos una
+        # vez y replicamos sólo para formar el batch de consultas independientes.
+        sample = {
+            "past_values": past_values_t,
+            "past_timestamps": past_timestamps_t,
+            "target_timestamp": target_timestamps_t[:1],
+            "target_values": torch.zeros(
+                (1, self.model.output_dim),
+                dtype=torch.float32,
+            ),
+        }
+        if past_sensor_ids_t is not None:
+            sample["past_sensor_ids"] = past_sensor_ids_t
+
+        seq = self.sequence_builder(sample)
+        num_targets = int(target_timestamps_t.numel())
+        target_positions = seq["is_target_mask"]
+        tokens_per_target = int(target_positions.sum().item())
+        if tokens_per_target <= 0:
+            raise RuntimeError("SequenceBuilder no generó tokens objetivo.")
+
+        input_values = seq["input_values"].unsqueeze(0).expand(
+            num_targets, -1, -1
+        ).to(self.device)
+        input_timestamps = seq["input_timestamps"].unsqueeze(0).repeat(
+            num_targets, 1
+        )
+        input_timestamps[:, target_positions] = target_timestamps_t.unsqueeze(1).expand(
+            -1, tokens_per_target
+        )
+        input_timestamps = input_timestamps.to(self.device)
+        is_target_mask = seq["is_target_mask"].unsqueeze(0).expand(
+            num_targets, -1
+        ).to(self.device)
+
+        input_sensor_ids = seq.get("input_sensor_ids", None)
+        if input_sensor_ids is not None:
+            input_sensor_ids = input_sensor_ids.unsqueeze(0).expand(
+                num_targets, -1
+            ).to(self.device)
+
+        preds = self.model(
+            input_values=input_values,
+            input_timestamps=input_timestamps,
+            is_target_mask=is_target_mask,
+            input_sensor_ids=input_sensor_ids,
+            padding_mask=None,
+            attn_mask=None,
+            return_dict=False,
+        )
+        preds_all = preds.detach().cpu()
+
+        if preds_all.ndim == 1:
+            preds_all = preds_all.unsqueeze(-1)
+        if preds_all.shape != (num_targets, self.model.output_dim):
+            raise RuntimeError(
+                "El modelo devolvió una shape inesperada para inferencia multi-target: "
+                f"{tuple(preds_all.shape)}; se esperaba "
+                f"({num_targets}, {self.model.output_dim})."
+            )
+
+        if self.target_scaler is not None:
+            preds_all = self.target_scaler.inverse_transform(preds_all)  # type: ignore[arg-type]
+        elif self.value_scaler is not None:
+            preds_all = self.value_scaler.inverse_transform(preds_all)  # type: ignore[arg-type]
 
         if return_torch:
             return preds_all
