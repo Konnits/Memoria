@@ -1,0 +1,73 @@
+schema_version: 1
+
+source:
+  storage: experiments/optuna_synthetic/optuna_studies.db
+  objective: mean_val_rmse
+  direction: minimize
+  tuning_datasets:
+    - univariate:bursty
+    - univariate:long_gaps
+    - univariate:hard_mixed
+    - multivariate:bursty
+    - multivariate:informative
+    - multivariate:hard_mixed
+
+# El protocolo de evaluación es común a todos los modelos. El perfil de
+# horizontes no puede variar por familia sin cambiar la dificultad del score.
+benchmark_task:
+  history_length: 512
+  horizon_profile: standard_4
+  target_offset_choices: [1, 4, 16, 64]
+  num_targets: 4
+  score_name: test_rmse
+  score_space: standardized_with_train_statistics
+
+families:
+  Custom:
+    study_name: synthetic_custom
+    best_trial_number: 117
+    best_val_rmse: 0.14107846302387417
+    optuna_task_params:
+      history_length: 512
+      horizon_profile: short_2
+      target_offset_choices: [1, 16]
+    model:
+      d_model: 96
+      num_heads: 4
+      num_layers: 2
+      dim_feedforward: 576
+      dropout: 0.05
+      time_encoding_mode: sinusoidal
+      time_transform: log1p
+      use_causal_mask: false
+    optimizer:
+      optimizer_name: adamw
+      learning_rate: 0.0005655377414706213
+      weight_decay: 0.0003748733910339571
+      warmup_epochs: 2
+      betas: [0.9, 0.95]
+
+  EncDec-AR:
+    study_name: synthetic_encdec_ar
+    best_trial_number: 249
+    best_val_rmse: 0.14765295097556308
+    optuna_task_params:
+      history_length: 512
+      horizon_profile: extended_8
+      target_offset_choices: [1, 2, 4, 8, 16, 32, 64, 128]
+    model:
+      d_model: 96
+      num_heads: 4
+      num_layers: 3
+      dim_feedforward: 192
+      dropout: 0.0
+      time_encoding_mode: time2vec
+      time_transform: linear
+      use_causal_mask: true
+      decoder_num_layers: 1
+    optimizer:
+      optimizer_name: adamw
+      learning_rate: 0.0006997557263932117
+      weight_decay: 0.004344957796532742
+      warmup_epochs: 3
+      betas: [0.9, 0.95]

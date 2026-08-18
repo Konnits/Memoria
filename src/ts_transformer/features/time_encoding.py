@@ -197,7 +197,7 @@ class TimePositionalEncoding(nn.Module):
         self,
         d_model: int,
         time_scale: float = 1.0,
-        mode: Literal["sinusoidal", "mlp", "time2vec"] = "sinusoidal",
+        mode: Literal["sinusoidal", "ordinal", "mlp", "time2vec"] = "sinusoidal",
         time_transform: Literal["linear", "log1p"] = "log1p",
         mlp_hidden_dim: int = 64,
     ) -> None:
@@ -213,6 +213,8 @@ class TimePositionalEncoding(nn.Module):
             hace que un "paso unitario" corresponda a 15 minutos.
         mode:
             "sinusoidal": encoding sinusoidal continuo (fijo).
+            "ordinal": encoding sinusoidal sobre la posición ordinal del token;
+            ignora las distancias de tiempo reales y sirve como ablación controlada.
             "mlp": encoding aprendido mediante un MLP sobre τ.
             "time2vec": encoding Time2Vec con componentes aprendidos.
         time_transform:
@@ -236,6 +238,9 @@ class TimePositionalEncoding(nn.Module):
         if self.time_transform not in {"linear", "log1p"}:
             raise ValueError("time_transform debe ser 'linear' o 'log1p'.")
 
+        if mode not in {"sinusoidal", "ordinal", "mlp", "time2vec"}:
+            raise ValueError(f"Modo de encoding temporal desconocido: {mode}")
+
         if mode == "mlp":
             self.mlp = nn.Sequential(
                 nn.Linear(1, mlp_hidden_dim),
@@ -248,7 +253,7 @@ class TimePositionalEncoding(nn.Module):
             self.mlp = None
 
         # Precalcular los "divisors" para el encoding sinusoidal
-        if mode == "sinusoidal":
+        if mode in {"sinusoidal", "ordinal"}:
             # indices = [0, 1, 2, ..., d_model-1]
             positions = torch.arange(0, d_model, dtype=torch.float32).view(1, -1)
             # El denominador 10000^{2k/d_model} se aplica sólo a pares,
@@ -290,15 +295,29 @@ class TimePositionalEncoding(nn.Module):
             )
 
         B, L = timestamps.shape
-        tau = compute_relative_time_deltas(
-            timestamps,
-            time_scale=self.time_scale,
-            padding_mask=padding_mask,
-            lengths=lengths,
-            time_transform=self.time_transform,
-        )
+        if self.mode == "ordinal":
+            positions = torch.arange(L, device=timestamps.device, dtype=torch.float32)
+            positions = positions.unsqueeze(0).expand(B, -1)
+            if lengths is not None:
+                first_valid = (L - lengths.to(device=timestamps.device, dtype=torch.long)).unsqueeze(1)
+            elif padding_mask is not None:
+                valid_mask = ~padding_mask
+                if not torch.all(valid_mask.any(dim=1)):
+                    raise ValueError("Cada secuencia debe tener al menos un token válido.")
+                first_valid = valid_mask.to(torch.int64).argmax(dim=1, keepdim=True)
+            else:
+                first_valid = torch.zeros(B, 1, device=timestamps.device, dtype=torch.long)
+            tau = positions - first_valid.to(torch.float32)
+        else:
+            tau = compute_relative_time_deltas(
+                timestamps,
+                time_scale=self.time_scale,
+                padding_mask=padding_mask,
+                lengths=lengths,
+                time_transform=self.time_transform,
+            )
 
-        if self.mode == "sinusoidal":
+        if self.mode in {"sinusoidal", "ordinal"}:
             # tau: [B, L] -> [B, L, 1]
             tau_expanded = tau.unsqueeze(-1)  # [B, L, 1]
             # div_term: [1, d_model] -> broadcasting a [B, L, d_model]

@@ -11,7 +11,7 @@ Tradicionalmente, la modelación de series de tiempo se ha abordado mediante mod
 
 \hfill
 
-La mayoría de las aplicaciones exitosas de Transformers a series de tiempo asume implícita o explícitamente que las observaciones están \textbf{equiespaciadas} en el tiempo, es decir, que el intervalo entre mediciones es constante. Esta suposición simplifica la definición de posiciones en la secuencia y permite reutilizar sin cambios el \textit{positional encoding} sinusoidal clásico. No obstante, en muchos sistemas reales los datos no se registran con una frecuencia perfectamente regular: pueden existir lapsos de tiempo sin mediciones, lecturas adicionales cuando se detectan eventos relevantes, fallas en los sensores o cambios en la tasa de muestreo. En estas situaciones se habla de \textbf{series de tiempo no equiespaciadas}.
+La mayoría de las aplicaciones exitosas de Transformers a series de tiempo asume implícita o explícitamente que las observaciones están \textit{equiespaciadas} en el tiempo, es decir, que el intervalo entre mediciones es constante. Esta suposición simplifica la definición de posiciones en la secuencia y permite reutilizar sin cambios el \textit{positional encoding} sinusoidal clásico. No obstante, en muchos sistemas reales los datos no se registran con una frecuencia perfectamente regular: pueden existir lapsos de tiempo sin mediciones, lecturas adicionales cuando se detectan eventos relevantes, fallas en los sensores o cambios en la tasa de muestreo. En estas situaciones se habla de \textit{series de tiempo no equiespaciadas}.
 
 \hfill
 
@@ -97,15 +97,15 @@ Para alcanzar este objetivo general, se plantean los siguientes objetivos espec�
 
 \section{Enfoque y resumen de la propuesta}
 
-Para abordar los objetivos anteriores, en esta memoria se desarrolla la familia \CTTransformer (\textbf{Continuous Transformer}), adaptada específicamente a series de tiempo no equiespaciadas. De forma muy resumida, la propuesta se estructura en los siguientes componentes:
+Para abordar los objetivos anteriores, en esta memoria se desarrolla la familia \CTTransformer (\textit{Continuous Transformer}), adaptada específicamente a series de tiempo no equiespaciadas. De forma muy resumida, la propuesta se estructura en los siguientes componentes:
 
 \begin{itemize}
-    \item Un \textbf{módulo de embedding de valores} que proyecta las variables de entrada (por ejemplo, mediciones de sensores) desde un espacio de dimensión $d_{\text{in}}$ a un espacio latente de dimensión $d_{\text{model}}$, común a todo el modelo.
-    \item Un \textbf{encoding temporal continuo} que recibe directamente los timestamps numéricos y construye vectores de dimensión $d_{\text{model}}$ para cada observación, utilizando una normalización en base a una escala de tiempo configurable y un esquema sinusoidal continuo, con variantes aprendibles basadas en Time2Vec.
-    \item Un \textbf{identificador de rol historia--objetivo} que diferencia explícitamente entre tokens observados y tokens de predicción, permitiendo introducir uno o más tokens objetivo en la secuencia con sus timestamps correspondientes, pero sin conocer aún sus valores verdaderos.
-    \item Una \textbf{arquitectura base con encoder Transformer}, compuesta por múltiples bloques de atención multi-cabeza y capas feed-forward, que opera sobre la secuencia completa (historia + tokens objetivo), respetando opcionalmente una máscara causal.
+    \item \textbf{Módulo de embedding de valores} que proyecta las variables de entrada (por ejemplo, mediciones de sensores) desde un espacio de dimensión $d_{\text{in}}$ a un espacio latente de dimensión $d_{\text{model}}$, común a todo el modelo.
+    \item \textbf{Encoding temporal continuo} que recibe directamente los timestamps numéricos y construye vectores de dimensión $d_{\text{model}}$ para cada observación, utilizando una normalización en base a una escala de tiempo configurable y un esquema sinusoidal continuo, con variantes aprendibles basadas en Time2Vec.
+    \item \textbf{Identificador de rol historia--objetivo} que diferencia explícitamente entre tokens observados y tokens de predicción, permitiendo introducir uno o más tokens objetivo en la secuencia con sus timestamps correspondientes, pero sin conocer aún sus valores verdaderos.
+    \item \textbf{Arquitectura base con encoder Transformer}, compuesta por múltiples bloques de atención multi-cabeza y capas feed-forward, que opera sobre la secuencia completa (historia + tokens objetivo), respetando opcionalmente una máscara causal.
     \item Variantes \textbf{encoder--decoder}, donde la historia se codifica por separado y los tokens objetivo se procesan en un decoder con atención cruzada hacia la memoria histórica.
-    \item Una \textbf{cabeza de regresión} que toma las representaciones latentes de los tokens objetivo y las proyecta al espacio de salida.
+    \item \textbf{Cabeza de regresión} que toma las representaciones latentes de los tokens objetivo y las proyecta al espacio de salida.
 \end{itemize}
 
 Sobre esta arquitectura se construye un conjunto de herramientas de datos y entrenamiento que permiten:
@@ -120,7 +120,7 @@ Los fundamentos matemáticos de redes neuronales, funciones de activación, algo
 
 \section{Alcances y limitaciones}
 
-Este trabajo se concentra en el problema de \textbf{predicción puntual} de series de tiempo, es decir, en entregar un valor esperado para la variable de interés en uno o varios tiempos futuros. No se abordan explícitamente modelos probabilísticos completos (por ejemplo, distribución de probabilidad sobre futuros posibles) ni técnicas de \textit{forecasting} probabilístico como cuantiles o intervalos de confianza, aunque se mencionan brevemente como posibles extensiones.
+Este trabajo se concentra en el problema de \textit{predicción puntual} de series de tiempo, es decir, en entregar un valor esperado para la variable de interés en uno o varios tiempos futuros. No se abordan explícitamente modelos probabilísticos completos (por ejemplo, distribución de probabilidad sobre futuros posibles) ni técnicas de \textit{forecasting} probabilístico como cuantiles o intervalos de confianza, aunque se mencionan brevemente como posibles extensiones.
 
 \hfill
 

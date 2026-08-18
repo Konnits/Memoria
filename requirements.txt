@@ -12,3 +12,6 @@ scipy
 colorama
 Mime
 nbformat>=4.2.0
+pyarrow
+optuna>=4.0,<5
+SQLAlchemy>=2.0,<3

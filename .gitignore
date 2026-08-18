@@ -89,3 +89,9 @@ data/processed/
 # experiments/**/checkpoints/
 data/pamap2
 *.pdf
+
+data/
+
+*.csv
+*.pt
+*.json

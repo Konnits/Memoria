@@ -74,6 +74,179 @@ class PersistenceModel(nn.Module):
         return {"preds": preds}
 
 
+class PerTargetPersistenceModel(nn.Module):
+    """Persistencia que recupera la última observación de cada canal objetivo."""
+
+    def __init__(self, input_dim: int, output_dim: int):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self._dummy = nn.Parameter(torch.zeros(1), requires_grad=True)
+
+    def forward(
+        self,
+        input_values: torch.Tensor,
+        input_timestamps: torch.Tensor,
+        is_target_mask: torch.Tensor,
+        input_sensor_ids: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        return_dict: bool = False,
+        **kwargs,
+    ) -> torch.Tensor | Dict[str, Any]:
+        batch_size, sequence_length, _ = input_values.shape
+        target_counts = is_target_mask.sum(dim=1)
+        if not torch.all(target_counts == target_counts[0]):
+            raise ValueError("Todos los elementos del batch deben tener el mismo número de targets.")
+        target_tokens = int(target_counts[0].item())
+        if target_tokens <= 0:
+            raise ValueError("Se requiere al menos un token target.")
+
+        history_mask = ~is_target_mask
+        if padding_mask is not None:
+            history_mask = history_mask & ~padding_mask
+
+        sequence_indices = torch.arange(
+            sequence_length, device=input_values.device
+        ).view(1, -1).expand(batch_size, -1)
+
+        if input_sensor_ids is None:
+            last_indices = torch.where(
+                history_mask, sequence_indices, torch.full_like(sequence_indices, -1)
+            ).max(dim=1).values
+            if torch.any(last_indices < 0):
+                raise ValueError("Cada muestra debe incluir historia válida.")
+            last_values = input_values[
+                torch.arange(batch_size, device=input_values.device), last_indices, :self.output_dim
+            ]
+            predictions = last_values.unsqueeze(1).expand(-1, target_tokens, -1)
+        else:
+            if target_tokens % self.output_dim != 0:
+                raise ValueError("Los tokens target deben agruparse por dimensión de salida.")
+            target_sensor_ids = input_sensor_ids[:, -target_tokens:]
+            same_sensor = input_sensor_ids.unsqueeze(2) == target_sensor_ids.unsqueeze(1)
+            candidate_indices = torch.where(
+                history_mask.unsqueeze(2) & same_sensor,
+                sequence_indices.unsqueeze(2),
+                torch.full_like(sequence_indices.unsqueeze(2), -1),
+            )
+            last_indices = candidate_indices.max(dim=1).values
+            safe_indices = last_indices.clamp_min(0)
+            last_values = input_values.gather(
+                1, safe_indices.unsqueeze(-1)
+            ).squeeze(-1)
+            predictions = last_values.view(
+                batch_size, target_tokens // self.output_dim, self.output_dim
+            )
+
+        predictions = predictions + self._dummy * 0.0
+        if predictions.shape[1] == 1:
+            predictions = predictions.squeeze(1)
+        if return_dict:
+            return {"preds": predictions}
+        return predictions
+
+
+class LastValueTimeMLP(nn.Module):
+    """Baseline aprendible con última observación, horizonte y canal objetivo."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        num_sensors: int = 1,
+        hidden_dim: int = 32,
+        time_scale: float = 1.0,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.num_sensors = max(1, int(num_sensors))
+        self.time_scale = max(float(time_scale), 1e-8)
+        self.sensor_embedding = nn.Embedding(self.num_sensors, 8)
+        self.network = nn.Sequential(
+            nn.Linear(10, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(
+        self,
+        input_values: torch.Tensor,
+        input_timestamps: torch.Tensor,
+        is_target_mask: torch.Tensor,
+        input_sensor_ids: Optional[torch.Tensor] = None,
+        padding_mask: Optional[torch.Tensor] = None,
+        return_dict: bool = False,
+        **kwargs,
+    ) -> torch.Tensor | Dict[str, Any]:
+        batch_size, sequence_length, _ = input_values.shape
+        target_counts = is_target_mask.sum(dim=1)
+        if not torch.all(target_counts == target_counts[0]):
+            raise ValueError("Todos los elementos del batch deben tener el mismo número de targets.")
+        target_tokens = int(target_counts[0].item())
+        if target_tokens <= 0:
+            raise ValueError("Se requiere al menos un token target.")
+
+        history_mask = ~is_target_mask
+        if padding_mask is not None:
+            history_mask = history_mask & ~padding_mask
+        sequence_indices = torch.arange(
+            sequence_length, device=input_values.device
+        ).view(1, -1).expand(batch_size, -1)
+
+        if input_sensor_ids is None:
+            if self.output_dim != 1:
+                raise ValueError("El modo denso de LastValueTimeMLP requiere output_dim=1.")
+            last_indices = torch.where(
+                history_mask, sequence_indices, torch.full_like(sequence_indices, -1)
+            ).max(dim=1).values
+            if torch.any(last_indices < 0):
+                raise ValueError("Cada muestra debe incluir historia válida.")
+            safe_indices = last_indices.unsqueeze(1)
+            last_values = input_values.gather(
+                1, safe_indices.unsqueeze(-1)
+            ).squeeze(-1).expand(-1, target_tokens)
+            last_times = input_timestamps.gather(1, safe_indices).expand(-1, target_tokens)
+            target_times = input_timestamps[:, -target_tokens:]
+            target_sensor_ids = torch.zeros(
+                batch_size, target_tokens, dtype=torch.long, device=input_values.device
+            )
+        else:
+            if target_tokens % self.output_dim != 0:
+                raise ValueError("Los tokens target deben agruparse por dimensión de salida.")
+            target_sensor_ids = input_sensor_ids[:, -target_tokens:]
+            same_sensor = input_sensor_ids.unsqueeze(2) == target_sensor_ids.unsqueeze(1)
+            candidate_indices = torch.where(
+                history_mask.unsqueeze(2) & same_sensor,
+                sequence_indices.unsqueeze(2),
+                torch.full_like(sequence_indices.unsqueeze(2), -1),
+            )
+            last_indices = candidate_indices.max(dim=1).values
+            safe_indices = last_indices.clamp_min(0)
+            last_values = input_values.gather(1, safe_indices.unsqueeze(-1)).squeeze(-1)
+            last_times = input_timestamps.gather(1, safe_indices)
+            target_times = input_timestamps[:, -target_tokens:]
+
+        horizon = ((target_times - last_times) / self.time_scale).unsqueeze(-1)
+        features = torch.cat(
+            [last_values.unsqueeze(-1), horizon, self.sensor_embedding(target_sensor_ids)],
+            dim=-1,
+        )
+        predictions = self.network(features).squeeze(-1)
+        if input_sensor_ids is None:
+            predictions = predictions.unsqueeze(-1)
+        else:
+            predictions = predictions.view(
+                batch_size, target_tokens // self.output_dim, self.output_dim
+            )
+
+        if predictions.shape[1] == 1:
+            predictions = predictions.squeeze(1)
+        if return_dict:
+            return {"preds": predictions}
+        return predictions
+
+
 class LinearBaselineModel(nn.Module):
     """
     Baseline lineal: proyección lineal sobre los últimos N valores de la historia

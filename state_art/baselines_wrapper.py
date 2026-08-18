@@ -41,6 +41,18 @@ class MultiHorizonBaselineWrapper(nn.Module):
         # Cabeza para modalidad evento multi-variable multi-temporal
         self.per_target_head = nn.Linear(d_model, 1)
 
+    @staticmethod
+    def _first_valid_time(times: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        """Obtiene t0 por muestra sin confundir el left-padding con tiempo real."""
+        if times.shape != valid_mask.shape:
+            raise ValueError(
+                f"times y valid_mask deben compartir shape: {times.shape} != {valid_mask.shape}"
+            )
+        if torch.any(~valid_mask.any(dim=1)):
+            raise ValueError("Cada muestra debe contener al menos un timestamp histórico válido.")
+        first_valid_index = valid_mask.to(torch.int64).argmax(dim=1, keepdim=True)
+        return times.gather(1, first_valid_index)
+
     def _extract_history_and_targets(self, input_values, input_timestamps, is_target_mask, padding_mask, input_sensor_ids):
         """
         Extrae tensores rectangulares para historia y targets.
@@ -120,7 +132,7 @@ class MultiHorizonBaselineWrapper(nn.Module):
         # Usamos compresión logarítmica para evitar que deltas enormes 
         # (ej. meses/años en segundos) saturen la Tanh del ContinuousValueEmbedding.
         # El clamp previene NaNs causados por tokens de padding (que tienen valor 0.0).
-        t0 = all_times[:, :1]
+        t0 = self._first_valid_time(hist_times, hist_valid)
         all_times_norm = torch.log1p(torch.clamp((all_times - t0) / self.time_scale, min=0.0))
 
         # --- STraTS embeddings sobre la secuencia completa ---
@@ -190,7 +202,7 @@ class MultiHorizonBaselineWrapper(nn.Module):
             v_mask = valid_mask
             
         if self.model_type == "strats":
-            t0_hist = hist_times_exp[:, :1]
+            t0_hist = self._first_valid_time(hist_times_exp, v_mask)
             hist_times_norm = torch.log1p(torch.clamp((hist_times_exp - t0_hist) / self.time_scale, min=0.0))
             f_emb = self.base_model.feature_emb(hist_fids.long())
             v_emb = self.base_model.value_emb(hist_values.float())
@@ -235,7 +247,7 @@ class MultiHorizonBaselineWrapper(nn.Module):
             raise ValueError(f"Model type no soportado: {self.model_type}")
             
         # Normalizar timestamps target relativo al primer timestamp de historia
-        t0_global = input_timestamps[:, :1]
+        t0_global = self._first_valid_time(hist_times_exp, v_mask)
         target_timestamps_norm = torch.log1p(torch.clamp((target_timestamps - t0_global) / self.time_scale, min=0.0))
         
         h_expanded = h_global.unsqueeze(1).expand(-1, num_targets, -1)

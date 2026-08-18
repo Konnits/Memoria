@@ -284,16 +284,31 @@ class TimeSeriesEncoderDecoder(nn.Module):
         B, L, D_in = history_values.shape
         M = target_timestamps.shape[1]
         
-        # En Dense mode K_total == M
-        if self.use_sensor_embedding:
-             raise NotImplementedError("Generate autoregresivo solo soporta modo Dense por ahora.")
-             
         device = history_values.device
         dtype = history_values.dtype
         if history_padding_mask is not None:
             history_padding_mask = history_padding_mask.to(device=device, dtype=torch.bool)
         if history_lengths is not None:
             history_lengths = history_lengths.to(device=device)
+
+        if self.use_sensor_embedding:
+            if history_sensor_ids is None or target_sensor_ids is None:
+                raise ValueError(
+                    "history_sensor_ids y target_sensor_ids son requeridos en modo evento."
+                )
+            target_sensor_ids = target_sensor_ids.to(device=device, dtype=torch.long)
+            target_times = target_timestamps.repeat_interleave(self.output_dim, dim=1)
+            target_token_count = M * self.output_dim
+            if target_sensor_ids.shape != (B, target_token_count):
+                raise ValueError(
+                    "target_sensor_ids debe tener shape "
+                    f"[B, M * output_dim]={B, target_token_count}; "
+                    f"se obtuvo {tuple(target_sensor_ids.shape)}."
+                )
+            history_sensor_ids = history_sensor_ids.to(device=device, dtype=torch.long)
+        else:
+            target_times = target_timestamps
+            target_token_count = M
 
         history_mask = torch.zeros(B, L, dtype=torch.bool, device=device)
         history_emb = self._embed_tokens(
@@ -317,11 +332,11 @@ class TimeSeriesEncoderDecoder(nn.Module):
         # El primer input al decoder es un token placeholder (ej. ceros)
         current_target_inputs = torch.zeros(B, 1, D_in, dtype=dtype, device=device)
         
-        for k in range(M):
+        for k in range(target_token_count):
             # Construir embeddings con la referencia temporal de la historia,
             # pero reutilizar la salida del encoder ya calculada.
             input_values = torch.cat([history_values, current_target_inputs], dim=1)
-            current_target_timestamps = target_timestamps[:, :k+1]
+            current_target_timestamps = target_times[:, :k + 1]
             input_timestamps = torch.cat([history_timestamps, current_target_timestamps], dim=1)
             
             is_target_mask = torch.zeros(B, L + k + 1, dtype=torch.bool, device=device)
@@ -331,10 +346,17 @@ class TimeSeriesEncoderDecoder(nn.Module):
                 target_padding = torch.zeros(B, k + 1, dtype=torch.bool, device=device)
                 full_padding_mask = torch.cat([history_padding_mask, target_padding], dim=1)
 
+            input_sensor_ids = None
+            if self.use_sensor_embedding:
+                input_sensor_ids = torch.cat(
+                    [history_sensor_ids, target_sensor_ids[:, :k + 1]], dim=1
+                )
+
             x_all = self._embed_tokens(
                 input_values=input_values,
                 input_timestamps=input_timestamps,
                 is_target_mask=is_target_mask,
+                input_sensor_ids=input_sensor_ids,
                 padding_mask=full_padding_mask,
             )
             x_dec = x_all[:, L:, :]
@@ -349,23 +371,23 @@ class TimeSeriesEncoderDecoder(nn.Module):
                 is_causal=bool(self.config.use_causal_mask),
                 return_all_layers=False,
             )
-            preds = self.head(decoder_output)
-            
-            if preds.dim() == 2:
-                # k=0
-                latest_pred = preds.unsqueeze(1)
+            if self.use_sensor_embedding:
+                latest_pred = self.per_target_head(decoder_output[:, -1:, :])
             else:
-                # k>0
-                latest_pred = preds[:, -1:, :]
-                
+                preds = self.head(decoder_output)
+                latest_pred = preds if preds.dim() == 3 else preds.unsqueeze(1)
+                latest_pred = latest_pred[:, -1:, :]
+
             generations.append(latest_pred)
             
             # Convertimos predicción a input_dim si no es el último paso
-            if k < M - 1:
+            if k < target_token_count - 1:
                 next_input = torch.zeros(B, 1, D_in, dtype=dtype, device=device)
-                out_d = min(D_in, self.output_dim)
+                out_d = min(D_in, latest_pred.shape[-1])
                 next_input[:, 0, :out_d] = latest_pred[:, 0, :out_d]
                 current_target_inputs = torch.cat([current_target_inputs, next_input], dim=1)
                 
-        all_generations = torch.cat(generations, dim=1) # [B, M, output_dim]
+        all_generations = torch.cat(generations, dim=1)
+        if self.use_sensor_embedding:
+            all_generations = all_generations.squeeze(-1).view(B, M, self.output_dim)
         return all_generations

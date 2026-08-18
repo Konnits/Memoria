@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .losses import get_loss_fn
-from .metrics import compute_regression_metrics
+from .metrics import compute_regression_metrics, compute_structured_regression_metrics
 from .optimizers import OptimizerConfig, build_optimizer, build_scheduler
 
 
@@ -517,6 +517,11 @@ class Trainer:
         metrics = compute_regression_metrics(
             preds_for_metrics, targets_for_metrics, prefix=prefix
         )
+        metrics.update(
+            compute_structured_regression_metrics(
+                preds_cat, targets_cat, target_mask_cat, prefix=prefix
+            )
+        )
         metrics[f"{prefix}loss"] = val_loss
         return metrics
 
@@ -588,6 +593,11 @@ class Trainer:
             targets_for_metrics = targets_cat
 
         metrics = compute_regression_metrics(preds_for_metrics, targets_for_metrics, prefix="val_")
+        metrics.update(
+            compute_structured_regression_metrics(
+                preds_cat, targets_cat, target_mask_cat, prefix="val_"
+            )
+        )
         metrics["val_loss"] = val_loss
 
         print(

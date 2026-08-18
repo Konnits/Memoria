@@ -69,6 +69,25 @@ def wilcoxon_signed_rank(
     return float(stat), float(p_val)
 
 
+def student_t_ci(
+    values: np.ndarray,
+    confidence: float = 0.95,
+) -> Tuple[float, float, float]:
+    """
+    Calcula el intervalo de confianza para la media usando la distribución t de Student.
+    """
+    vals = np.asarray(values, dtype=float)
+    vals = vals[~np.isnan(vals)]
+    n = len(vals)
+    if n < 2:
+        return float(vals.mean()) if n == 1 else float("nan"), float("nan"), float("nan")
+    mean = float(vals.mean())
+    sem = float(stats.sem(vals))
+    t_crit = float(stats.t.ppf((1 + confidence) / 2, df=n-1))
+    margin = t_crit * sem
+    return mean, mean - margin, mean + margin
+
+
 def bootstrap_ci(
     values: np.ndarray,
     n_bootstrap: int = 10000,
@@ -103,32 +122,28 @@ def compute_pairwise_comparison(
     seed_col: str = "Seed",
 ) -> Dict:
     """
-    Compara dos modelos usando métricas emparejadas por dataset.
+    Compara dos modelos usando métricas emparejadas por (dataset, seed).
 
-    Si hay múltiples semillas, promedia primero por (dataset, modelo).
+    No promedia las semillas, tratándolas como medidas independientes.
 
     Returns
     -------
     dict con: wins_a, wins_b, ties, mean_improvement_pct,
-              wilcoxon_stat, wilcoxon_p, bootstrap_ci_a, bootstrap_ci_b
+              wilcoxon_stat, wilcoxon_p, t_stat, t_p,
+              mean_a, ci_95_a, mean_b, ci_95_b
     """
-    # Promediar semillas por dataset
-    grouped = (
-        df[df[model_col].isin([model_a, model_b])]
-        .groupby([dataset_col, model_col])[metric_col]
-        .mean()
-        .reset_index()
-    )
+    df_a = df[df[model_col] == model_a].copy()
+    df_b = df[df[model_col] == model_b].copy()
 
-    pivot = grouped.pivot(index=dataset_col, columns=model_col, values=metric_col)
+    # Combinación de dataset y semilla para emparejamiento exacto
+    merged = pd.merge(df_a, df_b, on=[dataset_col, seed_col], suffixes=("_a", "_b"))
+    merged = merged.dropna(subset=[f"{metric_col}_a", f"{metric_col}_b"])
 
-    # Solo datasets donde ambos modelos tienen datos
-    pivot = pivot.dropna()
-    if pivot.empty:
-        return {"error": f"No hay datasets en común entre {model_a} y {model_b}"}
+    if merged.empty:
+        return {"error": f"No hay corridas en común entre {model_a} y {model_b}"}
 
-    vals_a = pivot[model_a].values
-    vals_b = pivot[model_b].values
+    vals_a = merged[f"{metric_col}_a"].values
+    vals_b = merged[f"{metric_col}_b"].values
 
     wins_a = int(np.sum(vals_a < vals_b))
     wins_b = int(np.sum(vals_b < vals_a))
@@ -138,22 +153,38 @@ def compute_pairwise_comparison(
     improvement_pct = ((vals_b - vals_a) / np.abs(vals_b).clip(1e-8)) * 100
     mean_improvement = float(improvement_pct.mean())
 
-    w_stat, w_p = wilcoxon_signed_rank(vals_a, vals_b, alternative="less")
+    # Test de Wilcoxon signed-rank (bilateral)
+    diffs = vals_a - vals_b
+    if np.all(diffs == 0):
+        w_stat, w_p = 0.0, 1.0
+    else:
+        try:
+            w_stat, w_p = stats.wilcoxon(vals_a, vals_b, alternative="two-sided")
+        except Exception:
+            w_stat, w_p = 0.0, 1.0
 
-    mean_a, ci_lo_a, ci_hi_a = bootstrap_ci(vals_a)
-    mean_b, ci_lo_b, ci_hi_b = bootstrap_ci(vals_b)
+    # Test t-student emparejado de diferencias de medias (bilateral)
+    try:
+        t_stat, t_p = stats.ttest_rel(vals_a, vals_b, alternative="two-sided")
+    except Exception:
+        t_stat, t_p = 0.0, 1.0
+
+    mean_a, ci_lo_a, ci_hi_a = student_t_ci(vals_a)
+    mean_b, ci_lo_b, ci_hi_b = student_t_ci(vals_b)
 
     return {
         "model_a": model_a,
         "model_b": model_b,
         "metric": metric_col,
-        "n_datasets": len(vals_a),
+        "n_runs": len(vals_a),
         "wins_a": wins_a,
         "wins_b": wins_b,
         "ties": ties,
         "mean_improvement_pct": round(mean_improvement, 2),
-        "wilcoxon_stat": round(w_stat, 4),
-        "wilcoxon_p": round(w_p, 6),
+        "wilcoxon_stat": round(float(w_stat), 4),
+        "wilcoxon_p": round(float(w_p), 6),
+        "t_stat": round(float(t_stat), 4),
+        "t_p": round(float(t_p), 6),
         "mean_a": round(mean_a, 6),
         "ci_95_a": f"[{ci_lo_a:.6f}, {ci_hi_a:.6f}]",
         "mean_b": round(mean_b, 6),
@@ -169,24 +200,16 @@ def generate_summary_table(
     seed_col: str = "Seed",
 ) -> pd.DataFrame:
     """
-    Genera tabla resumen por modelo sobre promedios por dataset.
+    Genera tabla resumen por modelo sobre corridas individuales (sin promediar semillas).
 
-    Incluye métricas clásicas (media ± std) y robustas:
-    - mediana
-    - IQR
-    - media recortada (trimmed mean, 10%)
+    Incluye la media y el intervalo de confianza Student-t al 95%.
 
     Returns
     -------
-    DataFrame con columnas: Modelo, metric_mean, metric_std para cada métrica
+    DataFrame con columnas: Modelo, metric_mean, metric_std, etc.
     """
-    # Promediar semillas por (dataset, modelo)
-    group_cols = [dataset_col, model_col]
-    agg = df.groupby(group_cols)[metrics].mean().reset_index()
-
-    # Ahora calcular media ± std sobre datasets
     rows = []
-    for model_name, grp in agg.groupby(model_col):
+    for model_name, grp in df.groupby(model_col):
         row = {"Modelo": model_name}
         for m in metrics:
             vals = grp[m].dropna().values
@@ -198,7 +221,9 @@ def generate_summary_table(
                 row[f"{m}_q3"] = float("nan")
                 row[f"{m}_iqr"] = float("nan")
                 row[f"{m}_trimmed_mean"] = float("nan")
-                row[f"{m}"] = "nan ± nan"
+                row[f"{m}_ci_lo"] = float("nan")
+                row[f"{m}_ci_hi"] = float("nan")
+                row[f"{m}"] = "nan [nan, nan]"
                 row[f"{m}_robust"] = "nan [IQR=nan]"
                 continue
 
@@ -208,14 +233,18 @@ def generate_summary_table(
             iqr = float(q3 - q1)
             tmean = trimmed_mean(vals, proportion_to_cut=0.1)
 
-            row[f"{m}_mean"] = round(float(vals.mean()), 6)
+            mean_val, ci_lo, ci_hi = student_t_ci(vals)
+
+            row[f"{m}_mean"] = round(mean_val, 6)
             row[f"{m}_std"] = round(float(vals.std()), 6)
             row[f"{m}_median"] = round(med, 6)
             row[f"{m}_q1"] = round(q1, 6)
             row[f"{m}_q3"] = round(q3, 6)
             row[f"{m}_iqr"] = round(iqr, 6)
             row[f"{m}_trimmed_mean"] = round(float(tmean), 6)
-            row[f"{m}"] = f"{vals.mean():.4f} ± {vals.std():.4f}"
+            row[f"{m}_ci_lo"] = round(ci_lo, 6)
+            row[f"{m}_ci_hi"] = round(ci_hi, 6)
+            row[f"{m}"] = f"{mean_val:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]"
             row[f"{m}_robust"] = f"{med:.4f} [IQR={iqr:.4f}]"
         rows.append(row)
 
@@ -231,17 +260,17 @@ def generate_full_report(
     seed_col: str = "Seed",
 ) -> str:
     """
-    Genera un reporte textual completo de la comparación entre modelos.
+    Genera un reporte textual completo de la comparación entre modelos usando corridas independientes.
     """
     if metrics is None:
         metrics = ["test_mse", "test_rmse", "test_mae"]
 
     models = sorted(df[model_col].unique())
-    lines = ["=" * 70, "REPORTE ESTADÍSTICO DE COMPARACIÓN DE MODELOS", "=" * 70, ""]
+    lines = ["=" * 70, "REPORTE ESTADÍSTICO DE COMPARACIÓN DE MODELOS (CORRIDAS INDEPENDIENTES)", "=" * 70, ""]
 
     # Tabla resumen
     summary = generate_summary_table(df, metrics, model_col, dataset_col, seed_col)
-    lines.append("RESUMEN POR MODELO (media ± std y robustez sobre datasets):")
+    lines.append("RESUMEN POR MODELO (media [t-CI 95%] y robustez sobre corridas individuales):")
     lines.append(summary.to_string(index=False))
     lines.append("")
 
@@ -258,9 +287,10 @@ def generate_full_report(
                 continue
             lines.append(
                 f"  {reference_model} vs {other}: "
-                f"Victorias {comp['wins_a']}/{comp['n_datasets']}, "
-                f"Mejora media: {comp['mean_improvement_pct']:.1f}%, "
-                f"Wilcoxon p={comp['wilcoxon_p']:.6f}"
+                f"Corridas={comp['n_runs']}, Victorias={comp['wins_a']}/{comp['n_runs']}, "
+                f"Mejora media={comp['mean_improvement_pct']:.1f}%, "
+                f"t-test p={comp['t_p']:.6f} (t={comp['t_stat']:.3f}), "
+                f"Wilcoxon p={comp['wilcoxon_p']:.6f} (W={comp['wilcoxon_stat']:.1f})"
             )
         lines.append("")
 

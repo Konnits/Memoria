@@ -1,0 +1,95 @@
+schema_version: 1
+protocol_status: frozen_before_confirmatory_generation
+
+scope:
+  data_domain: synthetic_only
+  representation: irregular_event_streams_without_resampling
+  real_world_validation: false
+  real_world_validation_reason: >-
+    No hay datasets reales disponibles cuya irregularidad temporal y procedencia
+    permitan una validación externa defendible.
+  excluded_comparisons:
+    - imputation
+    - interpolation
+    - fixed_grid_resampling
+
+data:
+  output_root: data/synthetic_confirmatory
+  generator_seeds: [2026, 2027, 2028]
+  presets:
+    - regular_control
+    - renewal
+    - bursty
+    - long_gaps
+    - informative
+    - nonstationary
+    - noisy
+    - hard_mixed
+  kinds: [univariate, multivariate]
+  observations_per_univariate_dataset: 1000000
+  observations_per_multivariate_dataset: 1000000
+  multivariate_channels: 6
+  generated_dataset_units: 48
+  split: [0.70, 0.15, 0.15]
+  observed_target: value
+  clean_reference_target: clean_value
+
+task:
+  history_length: 512
+  target_offsets: [1, 4, 16, 64]
+  num_targets: 4
+  stride: 128
+  score_space: standardized_with_train_statistics
+  primary_metric: test_rmse
+
+training:
+  model_seeds: [42, 84, 126]
+  expected_models_per_dataset: 9
+  expected_runs: 1296
+  checkpoint_selection: val_rmse
+  test_protocol_changes_after_start: forbidden
+
+models:
+  co_primary_proposed:
+    - Custom
+    - Custom-Time2Vec
+    - EncDec-AR
+  mechanistic_ablations:
+    - Custom-OrdinalTime
+    - Custom-NoRole
+  comparators:
+    - Persistence
+    - LastValueTimeMLP
+    - STraTS_Adapter
+    - CoFormer
+
+analysis:
+  statistical_unit: generated_dataset_realization
+  aggregate_training_seeds_within_dataset_first: true
+  primary_contrasts: all_co_primary_models_vs_all_comparators
+  primary_contrast_count: 12
+  primary_multiplicity_correction: Holm
+  ablation_contrasts:
+    - [Custom, Custom-OrdinalTime]
+    - [Custom, Custom-NoRole]
+  ablation_multiplicity_correction: Holm_separate_family
+  confidence_interval: paired_dataset_bootstrap_95
+  paired_nonparametric_test: Wilcoxon_signed_rank
+  superiority_rule:
+    - mean_delta_primary_minus_comparator_below_zero
+    - bootstrap_ci95_upper_below_zero
+    - holm_adjusted_p_below_0.05
+  secondary_descriptive_analyses:
+    - test_clean_rmse
+    - test_mae
+    - performance_by_target_offset
+    - performance_by_channel
+    - performance_by_kind
+    - performance_by_preset
+    - train_time
+    - trainable_parameters
+
+claim_boundary: >-
+  Los resultados permiten conclusiones sobre procesos sintéticos controlados
+  cubiertos por el generador. No establecen superioridad frente a estrategias
+  con grilla ni validez externa sobre series reales.

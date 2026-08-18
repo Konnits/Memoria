@@ -32,6 +32,11 @@ def main():
         return
 
     df = pd.read_csv(csv_path)
+    # Filtrar subconjunto balanceado para la tesis (datasets 1-5 y semillas 42, 84, 126)
+    df = df[
+        (df["Dataset_ID"].isin([1, 2, 3, 4, 5])) &
+        (df["Seed"].isin([42, 84, 126]))
+    ].copy()
     test_metrics = ["test_mse", "test_rmse", "test_mae"]
     available = [m for m in test_metrics if m in df.columns]
 
@@ -99,29 +104,33 @@ def main():
                 continue
             print(
                 f"  vs {other}: "
-                f"Victorias {comp['wins_a']}/{comp['n_datasets']}, "
+                f"Corridas {comp['n_runs']}, Victorias {comp['wins_a']}/{comp['n_runs']}, "
                 f"Mejora: {comp['mean_improvement_pct']:.1f}%, "
-                f"Wilcoxon W={comp['wilcoxon_stat']}, p={comp['wilcoxon_p']:.6f}"
+                f"t-test: t={comp['t_stat']}, p={comp['t_p']:.6f}, "
+                f"Wilcoxon: W={comp['wilcoxon_stat']}, p={comp['wilcoxon_p']:.6f}"
             )
 
     # =====================================================================
     # Tabla 4: Ablación
     # =====================================================================
-    ablation_models = [m for m in models if m.startswith("No")]
+    ablation_models = [m for m in models if m.startswith("No") or m == "Custom-Small"]
     if ablation_models:
         print("\n\nTABLA 4 — Ablación (LaTeX):")
-        agg2 = df.groupby(["Dataset_ID", "Modelo"])["test_mse"].mean().reset_index()
-        model_means = agg2.groupby("Modelo")["test_mse"].agg(["mean", "std"])
+        from statistical_analysis import student_t_ci
 
-        if reference in model_means.index:
-            ref_mse = model_means.loc[reference, "mean"]
-            print(f"  Custom: {ref_mse:.4f} ± {model_means.loc[reference, 'std']:.4f} (referencia)")
+        def get_ci_str(m_name):
+            vals = df[df["Modelo"] == m_name]["test_mse"].dropna().values
+            mean_val, ci_lo, ci_hi = student_t_ci(vals)
+            return mean_val, f"{mean_val:.4f} [{ci_lo:.4f}, {ci_hi:.4f}]"
+
+        if reference in models:
+            ref_mean, ref_str = get_ci_str(reference)
+            print(f"  Custom: {ref_str} (referencia)")
             for ab in ablation_models:
-                if ab in model_means.index:
-                    ab_mse = model_means.loc[ab, "mean"]
-                    ab_std = model_means.loc[ab, "std"]
-                    delta = ((ab_mse - ref_mse) / ref_mse) * 100
-                    print(f"  {ab}: {ab_mse:.4f} ± {ab_std:.4f} (+{delta:.1f}%)")
+                if ab in models:
+                    ab_mean, ab_str = get_ci_str(ab)
+                    delta = ((ab_mean - ref_mean) / ref_mean) * 100
+                    print(f"  {ab}: {ab_str} (+{delta:.1f}%)")
 
     # =====================================================================
     # Tabla 5: Costo computacional
@@ -133,20 +142,22 @@ def main():
         cost = df.groupby("Modelo")[avail_cost].mean().round(1)
         for model_name in cost.index:
             row = cost.loc[model_name]
-            params = int(row.get("n_params_trainable", 0))
+            params_val = row.get("n_params_trainable", 0)
+            params = int(params_val) if pd.notna(params_val) else 0
             time_s = row.get("train_time_s", 0)
-            epochs = int(row.get("epochs_run", 0))
-            print(f"  {model_name}: {params:,} params, {time_s:.0f}s, {epochs} epochs")
+            epochs_val = row.get("epochs_run", 0)
+            epochs = int(epochs_val) if pd.notna(epochs_val) else 0
+            print(f"  {model_name}: {params:,} params, {time_s:.1f}s, {epochs} epochs")
 
     # =====================================================================
-    # Bootstrap CIs
+    # Student's t CIs
     # =====================================================================
-    print("\n\nINTERVALOS BOOTSTRAP 95%:")
-    agg3 = df.groupby(["Dataset_ID", "Modelo"])["test_mse"].mean().reset_index()
+    print("\n\nINTERVALOS DE CONFIANZA T-STUDENT 95% (test_mse):")
+    from statistical_analysis import student_t_ci
     for model_name in models:
-        vals = agg3[agg3["Modelo"] == model_name]["test_mse"].values
+        vals = df[df["Modelo"] == model_name]["test_mse"].values
         if len(vals) > 0:
-            mean, lo, hi = bootstrap_ci(vals)
+            mean, lo, hi = student_t_ci(vals)
             print(f"  {model_name}: {mean:.4f} [{lo:.4f}, {hi:.4f}]")
 
     print(f"\n{'='*70}")

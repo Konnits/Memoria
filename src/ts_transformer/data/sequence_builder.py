@@ -148,17 +148,16 @@ class AutoregressiveSequenceBuilder(SequenceBuilder):
         K_per_m = int(self.num_target_tokens)
         K_total = M * K_per_m
 
-        if K_per_m != 1:
-            raise NotImplementedError("Autoregressive mode solo soporta Dense (num_target_tokens=1) por ahora.")
-
-        # Teacher Forcing: desplazamos 1 paso.
-        # Para el token en M_i, introducimos el valor de M_{i-1}.
-        # Para M_0, introducimos ceros.
-        shifted_targets = torch.zeros(M, D, dtype=past_values.dtype)
-        out_d = min(D, target_values.size(1))
-        
+        # Teacher forcing por horizonte: el bloque de sensores del horizonte
+        # i recibe los valores del bloque i - 1; el primer bloque queda en cero.
+        shifted_targets = torch.zeros(K_total, D, dtype=past_values.dtype)
+        flattened_targets = target_values.reshape(-1)
+        if flattened_targets.numel() != K_total:
+            raise ValueError(
+                "target_values debe contener un valor por token target en modo autoregresivo."
+            )
         if M > 1:
-            shifted_targets[1:, :out_d] = target_values[:-1, :out_d]
+            shifted_targets[K_per_m:, 0] = flattened_targets[:-K_per_m]
 
         target_token_values = shifted_targets
 

@@ -29,7 +29,7 @@ donde $d_h$ es la dimensión de cada cabeza. En la versión multi-cabeza se repi
 
 \hfill
 
-En esta memoria se consideran dos formulaciones basadas en Transformer. La formulación principal, utilizada por \CTTransformerBase\ y sus variantes más directas, emplea un \textbf{encoder Transformer} que recibe una secuencia de vectores ya embebidos, aplica varias capas de auto-atención multi-cabeza y redes feedforward, y devuelve una representación contextualizada para cada posición de la secuencia. Además, el benchmark incluye variantes encoder--decoder, donde la historia se procesa con este mismo tipo de encoder y los timestamps objetivo se procesan en un decoder mediante auto-atención multi-cabeza y atención cruzada multi-cabeza. Por claridad, este capítulo desarrolla primero la formulación basada en encoder, y luego explicita cómo se diferencia la extensión encoder--decoder.
+En esta memoria se consideran dos formulaciones basadas en Transformer. La formulación principal, utilizada por \CTTransformerBase\ y sus variantes más directas, emplea un \textit{encoder Transformer} que recibe una secuencia de vectores ya embebidos, aplica varias capas de auto-atención multi-cabeza y redes feedforward, y devuelve una representación contextualizada para cada posición de la secuencia. Además, el benchmark incluye variantes encoder--decoder, donde la historia se procesa con este mismo tipo de encoder y los timestamps objetivo se procesan en un decoder mediante auto-atención multi-cabeza y atención cruzada multi-cabeza. Por claridad, este capítulo desarrolla primero la formulación basada en encoder, y luego explicita cómo se diferencia la extensión encoder--decoder.
 
 \section{Transformers en series de tiempo}
 \label{sec:transformer-series-tiempo}
@@ -59,7 +59,7 @@ Si se ignorara esta irregularidad y se tratara cada observación como si corresp
 \section{Principios de adaptación para series no equiespaciadas}
 \label{sec:modelo-propuesto}
 
-A partir de las ventajas y limitaciones descritas, adaptar un Transformer al problema de series no equiespaciadas exige intervenir principalmente en la \textbf{representación de la secuencia}, no en el bloque encoder en sí. En esta memoria, esa adaptación se apoya en cuatro decisiones de diseño.
+A partir de las ventajas y limitaciones descritas, adaptar un Transformer al problema de series no equiespaciadas exige intervenir principalmente en la \textit{representación de la secuencia}, no en el bloque encoder en sí. En esta memoria, esa adaptación se apoya en cuatro decisiones de diseño.
 
 \begin{enumerate}
     \item \textbf{Usar timestamps reales en lugar de posiciones discretas}. La posición de cada observación deja de interpretarse como un índice entero y pasa a representarse mediante un encoding temporal evaluado directamente sobre el tiempo físico.

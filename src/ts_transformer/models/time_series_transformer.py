@@ -43,7 +43,7 @@ class TimeSeriesTransformerConfig:
     use_causal_mask: bool = False  # para experimentos autoregresivos (opcional)
     use_sensor_embedding: bool = False
     num_sensors: int = 0
-    time_encoding_mode: str = "sinusoidal"  # "sinusoidal" | "mlp" | "time2vec"
+    time_encoding_mode: str = "sinusoidal"  # "sinusoidal" | "ordinal" | "mlp" | "time2vec"
     readout_mode: str = "target_token"  # "target_token" | "target_plus_attention_pool"
     use_temporal_attn_bias: bool = False
     use_target_flag_embedding: bool = True

@@ -38,6 +38,18 @@ def summarize_metric(values: pd.Series) -> dict:
         "iqr": float(q3 - q1),
         "trimmed_mean": float(trimmed_mean(arr, 0.1)),
     }
+def student_t_ci(vals: np.ndarray, confidence: float = 0.95) -> tuple:
+    from scipy import stats
+    vals = vals[~np.isnan(vals)]
+    n = len(vals)
+    if n < 2:
+        return float(vals.mean()) if n == 1 else float("nan"), float("nan"), float("nan")
+    mean = float(vals.mean())
+    sem = float(stats.sem(vals))
+    t_crit = float(stats.t.ppf((1 + confidence) / 2, df=n-1))
+    margin = t_crit * sem
+    return mean, mean - margin, mean + margin
+
 
 def main():
     csv_path = "experiments/benchmark_final/benchmark_final.csv"
@@ -52,36 +64,40 @@ def main():
         if col not in df.columns:
             print(f"Error: La columna {col} no se encuentra en el CSV.")
             return
-            
-    # La tesis declara: "Media ± desviación estándar: se promedian las semillas por dataset..."
-    # 1. Promediar las semillas para cada par (Dataset_ID, Modelo)
+
+    # Subconjunto balanceado: datasets 1-5, semillas 42, 84, 126
+    df_balanced = df[
+        (df["Dataset_ID"].isin([1, 2, 3, 4, 5])) &
+        (df["Seed"].isin([42, 84, 126]))
+    ].copy()
+
     metrics = ["test_mse", "test_rmse", "test_mae"]
     if "test_mape" in df.columns:
         metrics.append("test_mape")
-        
-    seed_avg = df.groupby(["Dataset_ID", "Modelo"])[metrics].mean().reset_index()
 
-    # 2. Calcular estadísticas por modelo sobre datasets (robustas + clásicas)
+    # 2. Calcular estadísticas por modelo sobre corridas individuales (sin promediar)
     rows = []
-    for model_name, grp in seed_avg.groupby("Modelo"):
+    for model_name, grp in df_balanced.groupby("Modelo"):
         row = {"Modelo": model_name}
         for metric in metrics:
             s = summarize_metric(grp[metric])
-            row[f"{metric}_mean"] = s["mean"]
+            mean_val, ci_lo, ci_hi = student_t_ci(grp[metric].dropna().to_numpy(dtype=float))
+            row[f"{metric}_mean"] = mean_val
             row[f"{metric}_std"] = s["std"]
             row[f"{metric}_median"] = s["median"]
             row[f"{metric}_q1"] = s["q1"]
             row[f"{metric}_q3"] = s["q3"]
             row[f"{metric}_iqr"] = s["iqr"]
             row[f"{metric}_trimmed_mean"] = s["trimmed_mean"]
+            row[f"{metric}_ci_lo"] = ci_lo
+            row[f"{metric}_ci_hi"] = ci_hi
         rows.append(row)
     summary_stats = pd.DataFrame(rows)
 
-    # 3. Calcular "Victorias por dataset"
-    # "se cuenta en cuántos de los 17 datasets cada modelo obtiene el menor error"
-    # Lo haremos priorizando el MSE (Mean Squared Error), que es la pérdida principal.
-    idx_min_mse = seed_avg.groupby("Dataset_ID")["test_mse"].idxmin()
-    best_models = seed_avg.loc[idx_min_mse]
+    # 3. Calcular "Victorias por corrida"
+    # Para cada par (Dataset_ID, Seed), encontramos cuál modelo obtuvo el menor test_mse.
+    idx_min_mse = df_balanced.groupby(["Dataset_ID", "Seed"])["test_mse"].idxmin()
+    best_models = df_balanced.loc[idx_min_mse]
     wins_counts = best_models["Modelo"].value_counts().reset_index()
     wins_counts.columns = ["Modelo", "Victorias (MSE)"]
 
@@ -101,9 +117,9 @@ def main():
     print(" " * 35 + "RANKING DE MODELOS PARA LA TESIS")
     print("=" * 110)
     print("Metodología Aplicada (alineada con cap6_experimentos.tex):")
-    print(" 1. Los resultados de las semillas se promedian a nivel de dataset para estabilizar la varianza interna.")
-    print(" 2. Se reportan estadísticas clásicas (mean±std) y robustas (mediana + IQR, trimmed mean 10%).")
-    print(" 3. 'Victorias': Número de datasets en los que el modelo logró el MSE promedio MÁS BAJO frente al resto.")
+    print(" 1. Los resultados se evalúan sobre las 15 corridas individuales (5 datasets x 3 semillas) como observaciones independientes.")
+    print(" 2. Se reportan estadísticas con intervalos de confianza t-student al 95% y estadísticas robustas.")
+    print(" 3. 'Victorias': Número de corridas (de 15 en total) en las que el modelo logró el MSE MÁS BAJO frente al resto.")
     print(" 4. Ranking robusto: ordenado por menor MSE trimmed mean (10%), con desempate por mediana.")
     print("-" * 110)
     
@@ -115,16 +131,16 @@ def main():
     
     for metric in metrics:
         clean_name = metric.replace("test_", "").upper()
-        # Formato clásico y robusto
-        print_df[f"{clean_name} (Mean ± std)"] = final_df.apply(
-            lambda row: f"{row[f'{metric}_mean']:.4f} ± {row[f'{metric}_std']:.4f}", axis=1
+        # Formato clásico con t-student CI y robusto
+        print_df[f"{clean_name} (Mean [t-CI 95%])"] = final_df.apply(
+            lambda row: f"{row[f'{metric}_mean']:.4f} [{row[f'{metric}_ci_lo']:.4f}, {row[f'{metric}_ci_hi']:.4f}]", axis=1
         )
         print_df[f"{clean_name} (Median [IQR])"] = final_df.apply(
             lambda row: f"{row[f'{metric}_median']:.4f} [{row[f'{metric}_q1']:.4f}, {row[f'{metric}_q3']:.4f}]",
             axis=1,
         )
         
-    print_df["Victorias"] = final_df["Victorias (MSE)"]
+    print_df["Victorias"] = final_df["Victorias (MSE)"].map(lambda x: f"{x}/15")
 
     # Configurar opciones de impresión de pandas
     pd.set_option('display.max_columns', None)

@@ -10,7 +10,7 @@ Incluye:
 
 from .dilate_loss import DILATELoss
 from .losses import get_loss_fn
-from .metrics import compute_regression_metrics
+from .metrics import compute_regression_metrics, compute_structured_regression_metrics
 from .optimizers import OptimizerConfig, build_optimizer, build_scheduler
 from .train_loop import TrainingConfig, Trainer, train_model
 
@@ -18,6 +18,7 @@ __all__ = [
     "get_loss_fn",
     "DILATELoss",
     "compute_regression_metrics",
+    "compute_structured_regression_metrics",
     "OptimizerConfig",
     "build_optimizer",
     "build_scheduler",

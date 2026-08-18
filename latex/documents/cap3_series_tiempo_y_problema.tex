@@ -11,7 +11,7 @@ Primero se introduce la notación para series de tiempo univariadas y multivaria
 
 \subsection{Definición y notación}
 
-De manera general, una \textbf{serie de tiempo} es una secuencia de observaciones ordenadas en el tiempo. En su forma más simple (caso univariado) se puede escribir como:
+De manera general, una \textit{serie de tiempo} es una secuencia de observaciones ordenadas en el tiempo. En su forma más simple (caso univariado) se puede escribir como:
 \begin{equation}
     \{y_t\}_{t \in \mathcal{T}},
 \end{equation}
@@ -63,7 +63,7 @@ En estos casos, los instantes de observación
 \begin{equation}
     t_1, t_2, \dots, t_T
 \end{equation}
-ya no están separados por un intervalo constante, y la información contenida en las diferencias $t_{i+1} - t_i$ pasa a ser relevante. A este tipo de datos nos referiremos como \textbf{series de tiempo no equiespaciadas} o \textbf{con timestamps irregulares}.
+ya no están separados por un intervalo constante, y la información contenida en las diferencias $t_{i+1} - t_i$ pasa a ser relevante. A este tipo de datos nos referiremos como \textit{series de tiempo no equiespaciadas} o \textit{con timestamps irregulares}.
 
 \hfill
 
@@ -73,7 +73,7 @@ Trabajar directamente con timestamps reales permite, por ejemplo:
     \item Definir horizontes de predicción en términos de tiempo real (por ejemplo, ``predecir a 15 minutos, 1 hora y 3 horas en el futuro'') en lugar de solo ``a 1, 3 o 5 pasos''.
 \end{itemize}
 
-Estas características motivan la necesidad de modelos capaces de incorporar explícitamente la información temporal continua, lo que se abordará en capítulos posteriores mediante mecanismos de \emph{encoding temporal continuo} dentro de la arquitectura Transformer.
+Estas características motivan la necesidad de modelos capaces de incorporar explícitamente la información temporal continua, lo que se abordará en capítulos posteriores mediante mecanismos de \textit{encoding temporal continuo} dentro de la arquitectura Transformer.
 
 \section{Datos considerados en la memoria}
 \label{sec:datos-considerados}
@@ -112,7 +112,7 @@ parametrizado por $\theta$, que entregue una predicción $\widehat{\mathbf{y}}_{
 
 \hfill
 
-Por motivos computacionales y de regularización, se trabaja con una \textbf{historia truncada} de longitud acotada. En esta memoria se utiliza una ventana deslizante que, para cada ejemplo, considera sólo las últimas $h$ observaciones antes de $t^\star$:
+Por motivos computacionales y de regularización, se trabaja con una \textit{historia truncada} de longitud acotada. En esta memoria se utiliza una ventana deslizante que, para cada ejemplo, considera sólo las últimas $h$ observaciones antes de $t^\star$:
 \begin{equation}
     \mathcal{H}^{(h)}_i
     = \{(t_j, \mathbf{x}_j, \mathbf{y}_j) : i-h+1 \le j \le i\}.
@@ -129,7 +129,7 @@ donde $k$ es el número de pasos hacia adelante.
 
 En esta memoria se adopta una formulación que combina ambas visiones:
 \begin{itemize}
-    \item A nivel de construcción del dataset, se define un \textbf{offset de predicción} $o$ que indica cuántos índices después del \emph{anchor} se tomará el target en la secuencia original.
+    \item A nivel de construcción del dataset, se define un \textit{offset de predicción} $o$ que indica cuántos índices después del \emph{anchor} se tomará el target en la secuencia original.
     \item A nivel del modelo, además, se utilizan los timestamps reales $t_i$ para construir tiempos relativos respecto del primer timestamp válido de la ventana. Así, tanto las observaciones históricas como el instante objetivo se expresan en una escala común, la distancia temporal entre la última observación de la historia y el objetivo queda disponible como diferencia entre sus tiempos relativos, no como un cambio del origen temporal.
 \end{itemize}
 
@@ -151,7 +151,7 @@ Durante el entrenamiento se pueden considerar:
 
 \subsection{Ventanas deslizantes y tamaño de la historia}
 
-Sea $T$ el número total de observaciones disponibles. Dado un \textbf{tamaño máximo de historia} $h_{\max}$ y un \textbf{stride} $s \ge 1$, se generan ejemplos recorriendo la serie con una ventana deslizante. De manera simplificada, los índices \emph{anchor} se pueden escribir como:
+Sea $T$ el número total de observaciones disponibles. Dado un \textit{tamaño máximo de historia} $h_{\max}$ y un \textit{stride} $s \ge 1$, se generan ejemplos recorriendo la serie con una ventana deslizante. De manera simplificada, los índices \emph{anchor} se pueden escribir como:
 \begin{equation}
     a \in \{h_{\max}, h_{\max}+s, h_{\max}+2s, \dots, a_{\max}\},
 \end{equation}
