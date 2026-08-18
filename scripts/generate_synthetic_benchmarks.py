@@ -105,6 +105,15 @@ def parse_args() -> argparse.Namespace:
         help="Channels in each multivariate dataset (default: 6).",
     )
     parser.add_argument(
+        "--dense-steps",
+        type=positive_int,
+        default=4096,
+        help=(
+            "Resolution of the latent continuous trajectory (default: 4096). "
+            "Forecast horizons should span multiple latent steps."
+        ),
+    )
+    parser.add_argument(
         "--min-observations-per-channel",
         type=positive_int,
         default=8,
@@ -289,13 +298,19 @@ def save_collection_fast(
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    collection_metadata = {
+        "kind": collection.kind,
+        "n_datasets": len(collection.datasets),
+        "generator_seed": int(collection.config.seed),
+        "config": asdict(collection.config),
+    }
+    # ``collection_metadata.json`` conserva compatibilidad con consumidores
+    # existentes. El archivo por seed evita que una generación posterior en el
+    # mismo preset borre la procedencia de realizaciones anteriores.
+    write_json(output_dir / "collection_metadata.json", collection_metadata)
     write_json(
-        output_dir / "collection_metadata.json",
-        {
-            "kind": collection.kind,
-            "n_datasets": len(collection.datasets),
-            "config": asdict(collection.config),
-        },
+        output_dir / f"collection_metadata_gseed{int(collection.config.seed)}.json",
+        collection_metadata,
     )
 
     summaries: list[dict[str, Any]] = []
@@ -320,7 +335,9 @@ def save_collection_fast(
                 row_group_size=row_group_size,
             )
 
-        write_json(dataset_dir / "metadata.json", bundle.metadata)
+        dataset_metadata = dict(bundle.metadata)
+        dataset_metadata.setdefault("generator_seed", int(collection.config.seed))
+        write_json(dataset_dir / "metadata.json", dataset_metadata)
         summaries.append(metadata_summary(bundle, collection.kind))
 
     summary_path = output_dir / "collection_summary.csv"
@@ -381,6 +398,7 @@ def main() -> None:
         for generation_seed in generation_seeds:
             preset_start = time.perf_counter()
             config = benchmark_preset(preset_name, seed=generation_seed)
+            config.dynamics.dense_steps = int(args.dense_steps)
             config.store_dense_truth = not args.no_dense_truth
             generator = FastIrregularTimeSeriesGenerator(config, options=options)
             dataset_prefix = (

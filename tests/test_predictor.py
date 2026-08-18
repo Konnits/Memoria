@@ -6,6 +6,7 @@ import torch
 
 from ts_transformer.data.sequence_builder import SequenceBuilder
 from ts_transformer.inference.predictor import Predictor
+from ts_transformer.models.query_cross_attention import TimeSeriesQueryCrossAttention
 from ts_transformer.models.time_series_transformer import (
     TimeSeriesTransformer,
     TimeSeriesTransformerConfig,
@@ -100,3 +101,30 @@ def test_predict_multi_targets_rejects_empty_targets() -> None:
             [1.0, 2.0],
             [],
         )
+
+
+def test_default_event_builder_assigns_real_sensor_ids_for_query_cross() -> None:
+    config = TimeSeriesTransformerConfig(
+        input_dim=1,
+        output_dim=2,
+        d_model=16,
+        num_heads=4,
+        num_layers=1,
+        dim_feedforward=32,
+        dropout=0.0,
+        use_sensor_embedding=True,
+        num_sensors=2,
+    )
+    predictor = Predictor(model=TimeSeriesQueryCrossAttention(config))
+
+    assert predictor.sequence_builder.target_sensor_ids == [0, 1]
+    prediction = predictor.predict_single(
+        [[0.2], [0.4], [0.8]],
+        [1.0, 3.0, 7.0],
+        10.0,
+        past_sensor_ids=[0, 1, 0],
+        return_torch=True,
+    )
+
+    assert prediction.shape == (2,)
+    assert torch.isfinite(prediction).all()

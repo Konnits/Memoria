@@ -1,0 +1,13 @@
+csv_path: data
+time_column: time
+feature_columns:
+  - value
+target_columns:
+  - value
+history_length: 512
+target_offset_choices: [1, 4, 16, 64]
+num_targets: 4
+stride: 128
+batch_size: 64
+num_workers: 0
+shuffle_train: true

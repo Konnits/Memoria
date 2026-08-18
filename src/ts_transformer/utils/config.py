@@ -167,6 +167,9 @@ def load_model_config(path: str) -> TimeSeriesTransformerConfig:
             if cfg.get("temporal_attention_window") is not None
             else None
         ),
+        temporal_attention_min_neighbors=int(
+            cfg.get("temporal_attention_min_neighbors", 0)
+        ),
     )
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Any, Literal, Mapping, Union, Optional, Sequence
+from typing import Dict, Any, Literal, Mapping, Union, Optional, Sequence, Tuple
 
 import torch
 
@@ -18,8 +18,8 @@ class SequenceBuilder:
     Toma un sample del TimeSeriesDataset con claves:
         - "past_values": [L, input_dim]
         - "past_timestamps": [L]
-        - "target_timestamp": escalar
-        - "target_values": [output_dim]
+        - "target_timestamp": [M]
+        - "target_values": [M, output_dim]
 
     Y devuelve un diccionario con:
         - "input_values": [L+K, input_dim]
@@ -29,10 +29,17 @@ class SequenceBuilder:
         - "is_target_mask": [L+K] (bool)
             (True en las últimas K posiciones)
         - "target_values": [output_dim] (sin cambios)
-        - "target_timestamp": escalar (sin cambios)
+        - "target_timestamp": [M], relativo al primer evento cuando
+          ``relative_timestamps=True``.
+        - "absolute_target_timestamps": [M] float64 para auditoría.
+        - "input_observation_counts": masa/densidad representada por token.
 
     El embedding del modelo se encargará de:
         value_embedding + time_encoding + flag_embedding
+
+    Los timestamps absolutos se mantienen en float64 hasta restar el origen de
+    la ventana. Sólo los deltas relativos entregados al modelo se convierten a
+    float32, evitando el colapso de gaps pequeños cerca de timestamps UNIX.
     """
 
     input_dim: int
@@ -41,6 +48,7 @@ class SequenceBuilder:
     num_sensors: int = 0
     num_target_tokens: int = 1
     target_sensor_ids: Optional[Sequence[int]] = None
+    relative_timestamps: bool = True
 
     def __post_init__(self):
         if self.use_sensor_ids:
@@ -58,11 +66,131 @@ class SequenceBuilder:
                     "En dense mode, target_sensor_ids debe ser None."
                 )
 
+    def _prepare_timestamps(
+        self,
+        sample: Mapping[str, Any],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Relativiza en float64 *antes* de convertir la entrada del modelo a fp32.
+
+        El origen numérico es el primer evento histórico, de modo que todos los
+        tiempos válidos siguen siendo no negativos (importante para log1p). El
+        ``forecast_origin`` separado continúa siendo el último evento histórico.
+        """
+        past_absolute = torch.as_tensor(
+            sample["past_timestamps"], dtype=torch.float64
+        )
+        target_absolute = torch.as_tensor(
+            sample["target_timestamp"], dtype=torch.float64
+        )
+        if past_absolute.ndim != 1 or past_absolute.numel() == 0:
+            raise ValueError("past_timestamps debe ser 1D y contener al menos un valor.")
+        if target_absolute.ndim != 1 or target_absolute.numel() == 0:
+            raise ValueError("target_timestamp debe ser 1D y contener al menos un valor.")
+        if not bool(torch.isfinite(past_absolute).all()) or not bool(
+            torch.isfinite(target_absolute).all()
+        ):
+            raise ValueError("Los timestamps deben ser finitos.")
+
+        numerical_origin = past_absolute[0]
+        forecast_origin = torch.as_tensor(
+            sample.get("forecast_origin", past_absolute[-1]), dtype=torch.float64
+        ).reshape(())
+        if self.relative_timestamps:
+            past_model = (past_absolute - numerical_origin).to(torch.float32)
+            target_model = (target_absolute - numerical_origin).to(torch.float32)
+        else:
+            # Compatibilidad explícita para checkpoints antiguos. Puede perder
+            # gaps pequeños si los timestamps absolutos son grandes.
+            past_model = past_absolute.to(torch.float32)
+            target_model = target_absolute.to(torch.float32)
+        return (
+            past_model,
+            target_model,
+            past_absolute,
+            target_absolute,
+            torch.stack([numerical_origin, forecast_origin]),
+        )
+
+    @staticmethod
+    def _copy_temporal_metadata(
+        out: Dict[str, torch.Tensor],
+        sample: Mapping[str, Any],
+        absolute_target_timestamps: torch.Tensor,
+        origins: torch.Tensor,
+    ) -> None:
+        out["absolute_target_timestamps"] = absolute_target_timestamps
+        out["time_origin"] = origins[0]
+        out["forecast_origin"] = origins[1]
+        if "last_observation_age" in sample:
+            out["last_observation_age"] = torch.as_tensor(
+                sample["last_observation_age"], dtype=torch.float64
+            ).reshape(())
+        for key in (
+            "past_original_observation_count",
+            "past_original_max_gap",
+            "past_original_median_gap",
+        ):
+            if key in sample:
+                out[key] = torch.as_tensor(
+                    sample[key], dtype=torch.float64
+                ).reshape(())
+        for key in (
+            "past_sensor_observation_count",
+            "past_sensor_max_gap",
+            "past_sensor_median_gap",
+            "sensor_last_observation_age",
+        ):
+            if key in sample:
+                value = torch.as_tensor(sample[key], dtype=torch.float64)
+                if value.ndim != 1:
+                    raise ValueError(f"{key} debe tener shape [num_sensors].")
+                out[key] = value
+
+        # Los horizontes son features relativos: ya se calcularon en fp64 y se
+        # pueden transportar en fp32. Los timestamps de auditoría siguen en fp64.
+        for key in ("target_horizons", "requested_target_horizons"):
+            if key in sample:
+                out[key] = torch.as_tensor(sample[key], dtype=torch.float64).to(
+                    torch.float32
+                )
+        for key in ("requested_target_timestamps", "target_source_timestamps"):
+            if key in sample:
+                out[key] = torch.as_tensor(sample[key], dtype=torch.float64)
+
+    @staticmethod
+    def _build_observation_counts(
+        sample: Mapping[str, Any],
+        history_length: int,
+        target_tokens: int,
+    ) -> torch.Tensor:
+        counts = torch.as_tensor(
+            sample.get(
+                "past_observation_counts",
+                torch.ones(history_length, dtype=torch.float32),
+            ),
+            dtype=torch.float32,
+        )
+        if counts.shape != (history_length,):
+            raise ValueError(
+                "past_observation_counts debe tener un valor por token histórico."
+            )
+        if not bool(torch.isfinite(counts).all()) or bool((counts <= 0.0).any()):
+            raise ValueError("past_observation_counts debe ser finito y > 0.")
+        return torch.cat(
+            [counts, torch.zeros(target_tokens, dtype=torch.float32)], dim=0
+        )
+
     def __call__(self, sample: Mapping[str, Any]) -> Dict[str, torch.Tensor]:
         past_values = torch.as_tensor(sample["past_values"], dtype=torch.float32)
-        past_timestamps = torch.as_tensor(sample["past_timestamps"], dtype=torch.float32)
+        (
+            past_timestamps,
+            target_timestamp,
+            _past_absolute,
+            target_absolute,
+            origins,
+        ) = self._prepare_timestamps(sample)
         # Ahora target_timestamp y target_values son arrays [M], [M, output_dim]
-        target_timestamp = torch.as_tensor(sample["target_timestamp"], dtype=torch.float32)
         target_values = torch.as_tensor(sample["target_values"], dtype=torch.float32)
         target_loss_mask = sample.get("target_loss_mask", None)
         if target_loss_mask is not None:
@@ -105,7 +233,11 @@ class SequenceBuilder:
             "is_target_mask": is_target_mask,
             "target_values": target_values, # [M, output_dim]
             "target_timestamp": target_timestamp, # [M]
+            "input_observation_counts": self._build_observation_counts(
+                sample, L, K_total
+            ),
         }
+        self._copy_temporal_metadata(out, sample, target_absolute, origins)
 
         if self.use_sensor_ids:
             past_sensor_ids = torch.as_tensor(sample["past_sensor_ids"], dtype=torch.long)
@@ -135,8 +267,13 @@ class AutoregressiveSequenceBuilder(SequenceBuilder):
 
     def __call__(self, sample: Mapping[str, Any]) -> Dict[str, torch.Tensor]:
         past_values = torch.as_tensor(sample["past_values"], dtype=torch.float32)
-        past_timestamps = torch.as_tensor(sample["past_timestamps"], dtype=torch.float32)
-        target_timestamp = torch.as_tensor(sample["target_timestamp"], dtype=torch.float32)
+        (
+            past_timestamps,
+            target_timestamp,
+            _past_absolute,
+            target_absolute,
+            origins,
+        ) = self._prepare_timestamps(sample)
         target_values = torch.as_tensor(sample["target_values"], dtype=torch.float32)
         target_loss_mask = sample.get("target_loss_mask", None)
         if target_loss_mask is not None:
@@ -175,7 +312,11 @@ class AutoregressiveSequenceBuilder(SequenceBuilder):
             "is_target_mask": is_target_mask,
             "target_values": target_values,
             "target_timestamp": target_timestamp,
+            "input_observation_counts": self._build_observation_counts(
+                sample, L, K_total
+            ),
         }
+        self._copy_temporal_metadata(out, sample, target_absolute, origins)
 
         if self.use_sensor_ids:
             past_sensor_ids = torch.as_tensor(sample["past_sensor_ids"], dtype=torch.long)

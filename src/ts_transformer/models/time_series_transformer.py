@@ -56,6 +56,7 @@ class TimeSeriesTransformerConfig:
     use_continuous_rope: bool = False
     rope_base: float = 10000.0
     temporal_attention_window: Optional[float] = None
+    temporal_attention_min_neighbors: int = 0
 
 
 class TimeSeriesTransformer(nn.Module):
@@ -96,6 +97,8 @@ class TimeSeriesTransformer(nn.Module):
                     "temporal_attention_window y use_temporal_attn_bias no pueden "
                     "activarse juntos porque el bias materializa una matriz densa."
                 )
+        if int(config.temporal_attention_min_neighbors) < 0:
+            raise ValueError("temporal_attention_min_neighbors debe ser >= 0.")
         if config.rope_base <= 1.0:
             raise ValueError("rope_base debe ser mayor que 1.")
         if config.learnable_time_scale and config.time_encoding_mode == "ordinal":
@@ -362,6 +365,7 @@ class TimeSeriesTransformer(nn.Module):
                 return_all_layers=True,
                 temporal_positions=temporal_positions,
                 temporal_attention_window=self.config.temporal_attention_window,
+                temporal_attention_min_neighbors=self.config.temporal_attention_min_neighbors,
                 use_continuous_rope=self.config.use_continuous_rope,
                 rope_base=self.config.rope_base,
             )
@@ -376,6 +380,7 @@ class TimeSeriesTransformer(nn.Module):
                 return_all_layers=False,
                 temporal_positions=temporal_positions,
                 temporal_attention_window=self.config.temporal_attention_window,
+                temporal_attention_min_neighbors=self.config.temporal_attention_min_neighbors,
                 use_continuous_rope=self.config.use_continuous_rope,
                 rope_base=self.config.rope_base,
             )

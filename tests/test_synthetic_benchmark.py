@@ -86,7 +86,7 @@ def test_every_model_has_an_explicit_compatible_run_spec(
     assert models["Custom"].model.config.num_heads == 4
     assert models["Custom-TimeBias"].training_family == "Custom"
     assert models["Custom-TimeBias"].model.config.use_temporal_attn_bias is True
-    assert models["Custom-TimeBias"].model.config.temporal_bias_layers == 1
+    assert models["Custom-TimeBias"].model.config.temporal_bias_layers is None
     assert models["Custom-TimeBias"].model.temporal_attn_bias is not None
     assert models["EncDec-AR"].model.config.decoder_num_layers == 1
     assert all(spec.model is not None for spec in models.values())

@@ -87,6 +87,36 @@ def test_gaussian_nll_respects_target_mask_and_backpropagates() -> None:
     assert torch.equal(log_scale.grad[..., 1], torch.zeros_like(log_scale.grad[..., 1]))
 
 
+def test_single_horizon_loss_aligns_shapes_without_cross_example_broadcast() -> None:
+    trainer = object.__new__(Trainer)
+    trainer.loss_fn = torch.nn.MSELoss()
+    predictions = torch.tensor([[1.0], [10.0]], requires_grad=True)
+    targets = torch.tensor([[[1.0]], [[10.0]]])
+    mask = torch.ones_like(targets)
+
+    loss = trainer._compute_loss(predictions, targets, mask)
+    loss.backward()
+
+    assert loss.item() == pytest.approx(0.0)
+    assert predictions.grad is not None
+    assert torch.count_nonzero(predictions.grad) == 0
+
+
+def test_single_horizon_gaussian_alignment_keeps_distribution_shape() -> None:
+    trainer = object.__new__(Trainer)
+    mean = torch.tensor([[0.0], [2.0]], requires_grad=True)
+    target = torch.tensor([[[1.0]], [[4.0]]])
+    log_scale = torch.zeros_like(mean, requires_grad=True)
+    mask = torch.ones_like(target)
+
+    aligned = trainer._align_prediction_target_shapes(
+        mean, target, mask, log_scale=log_scale
+    )
+
+    assert aligned[0].shape == target.shape
+    assert aligned[3] is not None and aligned[3].shape == target.shape
+
+
 def test_learnable_time_scale_has_gradient_and_no_weight_decay() -> None:
     model = TimeSeriesTransformer(_config(learnable_time_scale=True)).train()
     output = model(**_batch()).square().mean()
@@ -162,6 +192,42 @@ def test_time_window_matches_dense_attention_when_window_covers_history() -> Non
     assert torch.allclose(dense[~padding], sparse[~padding], atol=1e-6, rtol=1e-5)
 
 
+def test_time_window_min_neighbors_keeps_queries_connected_across_large_gap() -> None:
+    torch.manual_seed(17)
+    attention = MultiHeadSelfAttention(8, 2, dropout=0.0).eval()
+    x = torch.randn(1, 5, 8)
+    positions = torch.tensor([[0.0, 1.0, 2.0, 3.0, 1000.0]])
+
+    dense, _ = attention(x, is_causal=True)
+    sparse, _ = attention(
+        x,
+        is_causal=True,
+        temporal_positions=positions,
+        temporal_attention_window=0.1,
+        temporal_attention_min_neighbors=5,
+    )
+
+    assert torch.allclose(dense[:, -1], sparse[:, -1], atol=1e-6, rtol=1e-5)
+
+
+def test_noncausal_time_window_expands_neighbors_on_both_sides() -> None:
+    torch.manual_seed(19)
+    attention = MultiHeadSelfAttention(8, 2, dropout=0.0).eval()
+    x = torch.randn(1, 5, 8)
+    positions = torch.tensor([[0.0, 10.0, 20.0, 30.0, 40.0]])
+
+    dense, _ = attention(x, is_causal=False)
+    sparse, _ = attention(
+        x,
+        is_causal=False,
+        temporal_positions=positions,
+        temporal_attention_window=0.1,
+        temporal_attention_min_neighbors=5,
+    )
+
+    assert torch.allclose(dense, sparse, atol=1e-6, rtol=1e-5)
+
+
 def test_time_window_rejects_non_left_padding() -> None:
     attention = MultiHeadSelfAttention(8, 2, dropout=0.0).eval()
     x = torch.randn(1, 4, 8)
@@ -199,6 +265,7 @@ def test_experimental_benchmark_variants_are_opt_in() -> None:
         recipes,
         include_experimental=True,
         experimental_temporal_window=3.5,
+        experimental_temporal_min_neighbors=17,
     )
 
     assert set(EXPERIMENTAL_MODEL_NAMES).isdisjoint(default_models)
@@ -209,4 +276,27 @@ def test_experimental_benchmark_variants_are_opt_in() -> None:
     assert (
         experimental_models["Custom-TimeWindow"].model.config.temporal_attention_window
         == 3.5
+    )
+    assert (
+        experimental_models["Custom-TimeWindow"].model.config.temporal_attention_min_neighbors
+        == 17
+    )
+    assert experimental_models["Custom-QueryCross"].training_family == "Custom"
+    assert (
+        experimental_models["Custom-QueryCross-NoTime"]
+        .model.query_config.use_query_horizon
+        is False
+    )
+    assert (
+        experimental_models["Custom-QueryCross-QueryOnly"]
+        .model.query_config.use_history_time_encoding
+        is False
+    )
+    assert (
+        experimental_models["Custom-QueryCross-CTSSM"].model.continuous_state
+        is not None
+    )
+    assert (
+        experimental_models["Custom-QueryCross-Gaussian"].model.config.prediction_head
+        == "gaussian"
     )

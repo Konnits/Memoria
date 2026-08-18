@@ -35,8 +35,8 @@ def parse_args():
 
 def _timestamps_to_float(col: pd.Series) -> np.ndarray:
     if np.issubdtype(col.dtype, np.datetime64):
-        return (col.view("int64") / 1e9).astype("float32")
-    return col.astype("float32").to_numpy()
+        return (col.view("int64") / 1e9).astype("float64")
+    return col.astype("float64").to_numpy()
 
 def build_models(model_cfg, use_events, model_input_dim, input_dim, output_dim):
     model_cfg.input_dim = model_input_dim

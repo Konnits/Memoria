@@ -15,7 +15,11 @@ from torch.utils.data import DataLoader
 
 from .dilate_loss import DILATELoss
 from .losses import get_loss_fn
-from .metrics import compute_regression_metrics, compute_structured_regression_metrics
+from .metrics import (
+    compute_gaussian_metrics,
+    compute_regression_metrics,
+    compute_structured_regression_metrics,
+)
 from .optimizers import OptimizerConfig, build_optimizer, build_scheduler
 
 
@@ -239,6 +243,10 @@ class Trainer:
         for epoch in range(1, self.config.num_epochs + 1):
             start_time = time.time()
 
+            # Los datasets con muestreo temporal reproducible (horizontes,
+            # subsampling de historia) deben avanzar su stream en cada época.
+            self._set_loader_epoch(self.train_loader, epoch - 1)
+
             # Política opcional para fine-tuning en dos fases:
             # 1) congelar encoder durante N épocas
             # 2) descongelar y opcionalmente bajar LR
@@ -299,6 +307,57 @@ class Trainer:
 
         return history
 
+    @classmethod
+    def _set_dataset_epoch(
+        cls,
+        dataset: Any,
+        epoch: int,
+        visited: Optional[set[int]] = None,
+    ) -> bool:
+        """Propaga ``set_epoch`` a wrappers como Subset/ConcatDataset."""
+        if visited is None:
+            visited = set()
+        identity = id(dataset)
+        if identity in visited:
+            return False
+        visited.add(identity)
+
+        changed = False
+        setter = getattr(dataset, "set_epoch", None)
+        epoch_dependent = bool(
+            getattr(dataset, "epoch_dependent_sampling", True)
+        )
+        if callable(setter) and epoch_dependent:
+            setter(int(epoch))
+            changed = True
+
+        nested = getattr(dataset, "dataset", None)
+        if nested is not None:
+            changed = cls._set_dataset_epoch(nested, epoch, visited) or changed
+        children = getattr(dataset, "datasets", None)
+        if children is not None:
+            for child in children:
+                changed = cls._set_dataset_epoch(child, epoch, visited) or changed
+        return changed
+
+    @classmethod
+    def _set_loader_epoch(cls, loader: DataLoader, epoch: int) -> None:
+        sampler = getattr(loader, "sampler", None)
+        sampler_setter = getattr(sampler, "set_epoch", None)
+        if callable(sampler_setter):
+            sampler_setter(int(epoch))
+
+        dataset_changed = cls._set_dataset_epoch(loader.dataset, epoch)
+        if (
+            dataset_changed
+            and bool(getattr(loader, "persistent_workers", False))
+            and int(getattr(loader, "num_workers", 0)) > 0
+        ):
+            raise RuntimeError(
+                "set_epoch no se propaga a copias ya persistentes del dataset. "
+                "Use persistent_workers=False para muestreo temporal por época."
+            )
+
     # ------------------------------------------------------------------
     # Entrenamiento y evaluación
     # ------------------------------------------------------------------
@@ -343,6 +402,9 @@ class Trainer:
         lengths = batch.get("lengths", None)
         if lengths is not None:
             lengths = lengths.to(self.device, non_blocking=True)
+        temporal_features = batch.get("temporal_features", None)
+        if temporal_features is not None:
+            temporal_features = temporal_features.to(self.device, non_blocking=True)
 
         # Denoising opcional: añade ruido gaussiano sólo en posiciones no-padding.
         # Útil para robustecer la tarea proxy en pretraining.
@@ -360,7 +422,7 @@ class Trainer:
                 .lower()
                 == "gaussian"
             )
-            model_output = self.model(
+            forward_kwargs = dict(
                 input_values=input_values,
                 input_timestamps=input_timestamps,
                 is_target_mask=is_target_mask,
@@ -370,12 +432,24 @@ class Trainer:
                 attn_mask=None,
                 return_dict=return_distribution,
             )
+            if temporal_features is not None:
+                forward_kwargs["temporal_features"] = temporal_features
+            model_output = self.model(**forward_kwargs)
             if return_distribution:
                 preds = model_output["preds"]
                 log_scale = model_output["log_scale"]
             else:
                 preds = model_output
                 log_scale = None
+
+            preds, target_values, target_loss_mask, log_scale = (
+                self._align_prediction_target_shapes(
+                    preds,
+                    target_values,
+                    target_loss_mask,
+                    log_scale=log_scale,
+                )
+            )
 
             loss = self._compute_loss(
                 preds,
@@ -492,6 +566,11 @@ class Trainer:
             lengths = batch.get("lengths", None)
             if lengths is not None:
                 lengths = lengths.to(self.device, non_blocking=True)
+            temporal_features = batch.get("temporal_features", None)
+            if temporal_features is not None:
+                temporal_features = temporal_features.to(
+                    self.device, non_blocking=True
+                )
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
                 return_distribution = (
@@ -499,7 +578,7 @@ class Trainer:
                     .lower()
                     == "gaussian"
                 )
-                model_output = self.model(
+                forward_kwargs = dict(
                     input_values=input_values,
                     input_timestamps=input_timestamps,
                     is_target_mask=is_target_mask,
@@ -509,12 +588,24 @@ class Trainer:
                     attn_mask=None,
                     return_dict=return_distribution,
                 )
+                if temporal_features is not None:
+                    forward_kwargs["temporal_features"] = temporal_features
+                model_output = self.model(**forward_kwargs)
                 if return_distribution:
                     preds = model_output["preds"]
                     log_scale = model_output["log_scale"]
                 else:
                     preds = model_output
                     log_scale = None
+
+            preds, target_values, target_loss_mask, log_scale = (
+                self._align_prediction_target_shapes(
+                    preds,
+                    target_values,
+                    target_loss_mask,
+                    log_scale=log_scale,
+                )
+            )
 
             all_preds.append(preds.detach().cpu())
             all_targets.append(target_values.detach().cpu())
@@ -546,8 +637,10 @@ class Trainer:
                 preds_for_metrics = preds_cat[valid].view(-1, 1)
                 targets_for_metrics = targets_cat[valid].view(-1, 1)
             else:
-                preds_for_metrics = preds_cat.view(-1, 1)
-                targets_for_metrics = targets_cat.view(-1, 1)
+                raise ValueError(
+                    "El loader de evaluación no contiene ningún target válido; "
+                    "no se pueden calcular métricas ni seleccionar checkpoint."
+                )
         else:
             preds_for_metrics = preds_cat
             targets_for_metrics = targets_cat
@@ -560,6 +653,16 @@ class Trainer:
                 preds_cat, targets_cat, target_mask_cat, prefix=prefix
             )
         )
+        if log_scale_cat is not None:
+            metrics.update(
+                compute_gaussian_metrics(
+                    preds_cat,
+                    targets_cat,
+                    log_scale_cat,
+                    target_mask_cat,
+                    prefix=prefix,
+                )
+            )
         metrics[f"{prefix}loss"] = val_loss
         return metrics
 
@@ -589,6 +692,11 @@ class Trainer:
             lengths = batch.get("lengths", None)
             if lengths is not None:
                 lengths = lengths.to(self.device, non_blocking=True)
+            temporal_features = batch.get("temporal_features", None)
+            if temporal_features is not None:
+                temporal_features = temporal_features.to(
+                    self.device, non_blocking=True
+                )
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
                 return_distribution = (
@@ -596,7 +704,7 @@ class Trainer:
                     .lower()
                     == "gaussian"
                 )
-                model_output = self.model(
+                forward_kwargs = dict(
                     input_values=input_values,
                     input_timestamps=input_timestamps,
                     is_target_mask=is_target_mask,
@@ -606,12 +714,24 @@ class Trainer:
                     attn_mask=None,
                     return_dict=return_distribution,
                 )
+                if temporal_features is not None:
+                    forward_kwargs["temporal_features"] = temporal_features
+                model_output = self.model(**forward_kwargs)
                 if return_distribution:
                     preds = model_output["preds"]
                     log_scale = model_output["log_scale"]
                 else:
                     preds = model_output
                     log_scale = None
+
+            preds, target_values, target_loss_mask, log_scale = (
+                self._align_prediction_target_shapes(
+                    preds,
+                    target_values,
+                    target_loss_mask,
+                    log_scale=log_scale,
+                )
+            )
 
             all_preds.append(preds.detach().cpu())
             all_targets.append(target_values.detach().cpu())
@@ -644,8 +764,10 @@ class Trainer:
                 preds_for_metrics = preds_cat[valid].view(-1, 1)
                 targets_for_metrics = targets_cat[valid].view(-1, 1)
             else:
-                preds_for_metrics = preds_cat.view(-1, 1)
-                targets_for_metrics = targets_cat.view(-1, 1)
+                raise ValueError(
+                    "El loader de validación no contiene ningún target válido; "
+                    "no se pueden calcular métricas ni seleccionar checkpoint."
+                )
         else:
             preds_for_metrics = preds_cat
             targets_for_metrics = targets_cat
@@ -656,6 +778,16 @@ class Trainer:
                 preds_cat, targets_cat, target_mask_cat, prefix="val_"
             )
         )
+        if log_scale_cat is not None:
+            metrics.update(
+                compute_gaussian_metrics(
+                    preds_cat,
+                    targets_cat,
+                    log_scale_cat,
+                    target_mask_cat,
+                    prefix="val_",
+                )
+            )
         metrics["val_loss"] = val_loss
 
         print(
@@ -664,6 +796,70 @@ class Trainer:
         )
 
         return metrics
+
+    @staticmethod
+    def _align_prediction_target_shapes(
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        target_loss_mask: Optional[torch.Tensor],
+        *,
+        log_scale: Optional[torch.Tensor] = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
+        """Alinea el horizonte unitario sin permitir broadcasting ambiguo.
+
+        Los heads históricos devuelven ``[B, D]`` cuando hay una sola query,
+        mientras el dataset físico conserva ``[B, 1, D]``. PyTorch podría
+        broadcast esas formas a ``[B, B, D]`` y mezclar ejemplos. Adaptamos
+        exclusivamente ese eje unitario y rechazamos cualquier otra diferencia.
+        """
+
+        if preds.shape != targets.shape:
+            if (
+                targets.ndim == preds.ndim + 1
+                and targets.shape[1] == 1
+                and preds.shape[0] == targets.shape[0]
+                and preds.shape[1:] == targets.shape[2:]
+            ):
+                preds = preds.unsqueeze(1)
+                if log_scale is not None:
+                    log_scale = log_scale.unsqueeze(1)
+            elif (
+                preds.ndim == targets.ndim + 1
+                and preds.shape[1] == 1
+                and preds.shape[0] == targets.shape[0]
+                and preds.shape[2:] == targets.shape[1:]
+            ):
+                preds = preds.squeeze(1)
+                if log_scale is not None:
+                    log_scale = log_scale.squeeze(1)
+            else:
+                raise ValueError(
+                    "La shape de la predicción no coincide con el target y no "
+                    "corresponde a un horizonte unitario: "
+                    f"preds={tuple(preds.shape)}, targets={tuple(targets.shape)}."
+                )
+
+        if preds.shape != targets.shape:
+            raise ValueError(
+                f"preds={tuple(preds.shape)} y targets={tuple(targets.shape)} "
+                "deben coincidir exactamente."
+            )
+        if log_scale is not None and log_scale.shape != preds.shape:
+            raise ValueError(
+                f"log_scale={tuple(log_scale.shape)} debe coincidir con "
+                f"preds={tuple(preds.shape)}."
+            )
+        if target_loss_mask is not None and target_loss_mask.shape != targets.shape:
+            raise ValueError(
+                f"target_loss_mask={tuple(target_loss_mask.shape)} debe coincidir "
+                f"con targets={tuple(targets.shape)}."
+            )
+        return preds, targets, target_loss_mask, log_scale
 
     def _compute_loss(
         self,
@@ -675,16 +871,15 @@ class Trainer:
         """
         Calcula pérdida normal o enmascarada (masked loss) si se provee mask.
         """
+        preds, targets, target_loss_mask, log_scale = (
+            self._align_prediction_target_shapes(
+                preds,
+                targets,
+                target_loss_mask,
+                log_scale=log_scale,
+            )
+        )
         if log_scale is not None:
-            if preds.ndim + 1 == targets.ndim and targets.shape[1] == 1:
-                preds = preds.unsqueeze(1)
-                log_scale = log_scale.unsqueeze(1)
-            if preds.shape != targets.shape or log_scale.shape != targets.shape:
-                raise ValueError(
-                    "preds, targets y log_scale deben tener la misma shape para NLL. "
-                    f"preds={tuple(preds.shape)}, targets={tuple(targets.shape)}, "
-                    f"log_scale={tuple(log_scale.shape)}"
-                )
             inverse_variance = torch.exp(-2.0 * log_scale)
             per = (
                 log_scale

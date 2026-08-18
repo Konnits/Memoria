@@ -15,6 +15,17 @@ from .masking import create_causal_mask
 from .heads import RegressionHead
 from .time_series_transformer import TimeSeriesTransformer
 from .time_series_encoder_decoder import TimeSeriesEncoderDecoder
+from .query_cross_attention import (
+    CustomQueryCrossAttention,
+    QueryCrossAttentionConfig,
+    TimeSeriesQueryCrossAttention,
+)
+from .continuous_basis_decoder import (
+    ContinuousBasisDecoderConfig,
+    ContinuousHorizonBasis,
+    CustomContinuousBasisDecoder,
+    TimeSeriesContinuousBasisDecoder,
+)
 
 __all__ = [
     "MultiHeadSelfAttention",
@@ -24,4 +35,11 @@ __all__ = [
     "RegressionHead",
     "TimeSeriesTransformer",
     "TimeSeriesEncoderDecoder",
+    "CustomQueryCrossAttention",
+    "QueryCrossAttentionConfig",
+    "TimeSeriesQueryCrossAttention",
+    "ContinuousBasisDecoderConfig",
+    "ContinuousHorizonBasis",
+    "CustomContinuousBasisDecoder",
+    "TimeSeriesContinuousBasisDecoder",
 ]

@@ -69,6 +69,7 @@ class MultiHeadSelfAttention(nn.Module):
         is_causal: bool = False,
         temporal_positions: Optional[torch.Tensor] = None,
         temporal_attention_window: Optional[float] = None,
+        temporal_attention_min_neighbors: int = 0,
         use_continuous_rope: bool = False,
         rope_base: float = 10000.0,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
@@ -146,6 +147,7 @@ class MultiHeadSelfAttention(nn.Module):
                 key_padding_mask=key_padding_mask,
                 is_causal=is_causal,
                 window=float(temporal_attention_window),
+                min_neighbors=int(temporal_attention_min_neighbors),
             )
             attn_output = (
                 attn_output.transpose(1, 2)
@@ -324,10 +326,13 @@ class MultiHeadSelfAttention(nn.Module):
         key_padding_mask: Optional[torch.Tensor],
         is_causal: bool,
         window: float,
+        min_neighbors: int = 0,
     ) -> torch.Tensor:
         """Atención O(L*K) sobre vecinos dentro de una ventana temporal."""
         if window <= 0.0:
             raise ValueError("temporal_attention_window debe ser > 0.")
+        if min_neighbors < 0:
+            raise ValueError("temporal_attention_min_neighbors debe ser >= 0.")
 
         batch_size, num_heads, seq_len, d_head = q.shape
         if key_padding_mask is None:
@@ -366,12 +371,53 @@ class MultiHeadSelfAttention(nn.Module):
             query_limits = torch.arange(seq_len, device=q.device).view(1, -1) + 1
             right = torch.minimum(right, query_limits)
 
+        # Una ventana física muy estrecha no debe aislar consultas situadas
+        # después de un gap. En modo causal se conservan K vecinos previos
+        # (incluida la query); en modo bidireccional se expande un bloque
+        # cronológico alrededor de la query. El filtro posterior sigue
+        # eliminando left-padding.
+        if min_neighbors:
+            query_indices = torch.arange(seq_len, device=q.device).view(1, -1)
+            first_valid = valid_tokens.to(torch.int64).argmax(dim=1, keepdim=True)
+            available = valid_tokens.sum(dim=1, keepdim=True)
+            requested = torch.minimum(
+                available,
+                torch.full_like(available, int(min_neighbors)),
+            )
+            if is_causal:
+                neighbor_floor = torch.maximum(
+                    first_valid,
+                    query_indices + 1 - requested,
+                )
+                left = torch.minimum(left, neighbor_floor)
+            else:
+                candidate_left = torch.maximum(
+                    first_valid,
+                    query_indices - torch.div(
+                        requested - 1, 2, rounding_mode="floor"
+                    ),
+                )
+                candidate_right = torch.minimum(
+                    torch.full_like(candidate_left, seq_len),
+                    candidate_left + requested,
+                )
+                candidate_left = torch.maximum(
+                    first_valid,
+                    candidate_right - requested,
+                )
+                left = torch.minimum(left, candidate_left)
+                right = torch.maximum(right, candidate_right)
+
         spans = (right - left).clamp_min(0)
         spans = torch.where(valid_tokens, spans, torch.zeros_like(spans))
         max_neighbors = max(1, int(spans.max().item()))
         offsets = torch.arange(max_neighbors, device=q.device).view(1, 1, -1)
         neighbor_indices = (left.unsqueeze(-1) + offsets).clamp(0, seq_len - 1)
         neighbor_valid = offsets < spans.unsqueeze(-1)
+        gathered_token_validity = valid_tokens.gather(
+            1, neighbor_indices.reshape(batch_size, -1)
+        ).reshape_as(neighbor_indices)
+        neighbor_valid = neighbor_valid & gathered_token_validity
 
         batch_indices = torch.arange(batch_size, device=q.device).view(-1, 1, 1, 1)
         head_indices = torch.arange(num_heads, device=q.device).view(1, -1, 1, 1)

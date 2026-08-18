@@ -93,8 +93,8 @@ def parse_args() -> argparse.Namespace:
 
 def _timestamps_to_float(col: pd.Series) -> np.ndarray:
     if pd.api.types.is_numeric_dtype(col):
-        return col.astype("float32").to_numpy()
-    return pd.to_datetime(col).apply(lambda x: x.timestamp()).astype("float32").to_numpy()
+        return col.astype("float64").to_numpy()
+    return pd.to_datetime(col).apply(lambda x: x.timestamp()).astype("float64").to_numpy()
 
 
 def _load_checkpoint_state(checkpoint_path: str, device: torch.device | str = "cpu") -> dict:

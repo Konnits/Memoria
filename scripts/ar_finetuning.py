@@ -19,8 +19,8 @@ from ts_transformer.models.time_series_encoder_decoder import TimeSeriesEncoderD
 
 def _timestamps_to_float(col: pd.Series) -> np.ndarray:
     if np.issubdtype(col.dtype, np.datetime64):
-        return (col.view("int64") / 1e9).astype("float32")
-    return col.astype("float32").to_numpy()
+        return (col.view("int64") / 1e9).astype("float64")
+    return col.astype("float64").to_numpy()
 
 class AdvancedARTimeSeriesDataset(TimeSeriesDataset):
     """Dataset proxy capaz de intercalar modos autoregresivos por step."""

@@ -312,16 +312,16 @@ class ExperimentPredictor:
             raise ValueError(f"{name} debe ser un array 1D o un escalar.")
 
         if np.issubdtype(arr.dtype, np.datetime64):
-            return (arr.astype("datetime64[ns]").astype(np.int64) / 1e9).astype(np.float32)
+            return (arr.astype("datetime64[ns]").astype(np.int64) / 1e9).astype(np.float64)
 
         if arr.dtype == object:
             try:
                 dt = pd.to_datetime(arr, errors="raise")
             except Exception:
-                return arr.astype(np.float32)
-            return (dt.astype("int64") / 1e9).to_numpy(dtype=np.float32)
+                return arr.astype(np.float64)
+            return (dt.astype("int64") / 1e9).to_numpy(dtype=np.float64)
 
-        return arr.astype(np.float32)
+        return arr.astype(np.float64)
 
     def _build_prediction_frame(
         self,

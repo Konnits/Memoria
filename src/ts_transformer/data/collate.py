@@ -16,6 +16,44 @@ class _CollateFn:
     ) -> None:
         self.pad_to_max_length = pad_to_max_length
 
+    @staticmethod
+    def _add_temporal_metadata(
+        out: Dict[str, torch.Tensor],
+        samples: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Apila metadatos de consulta sin degradar timestamps absolutos fp64."""
+        keys = (
+            "absolute_target_timestamps",
+            "time_origin",
+            "forecast_origin",
+            "last_observation_age",
+            "past_original_observation_count",
+            "past_original_max_gap",
+            "past_original_median_gap",
+            "past_sensor_observation_count",
+            "past_sensor_max_gap",
+            "past_sensor_median_gap",
+            "sensor_last_observation_age",
+            "target_horizons",
+            "requested_target_horizons",
+            "requested_target_timestamps",
+            "target_source_timestamps",
+        )
+        for key in keys:
+            present = [key in sample for sample in samples]
+            if any(present) and not all(present):
+                raise ValueError(
+                    f"El metadato temporal '{key}' debe estar presente en todo el batch."
+                )
+            if all(present):
+                tensors = [torch.as_tensor(sample[key]) for sample in samples]
+                first_shape = tensors[0].shape
+                if any(tensor.shape != first_shape for tensor in tensors[1:]):
+                    raise ValueError(
+                        f"El metadato temporal '{key}' debe tener shape homogénea."
+                    )
+                out[key] = torch.stack(tensors, dim=0)
+
     def __call__(self, samples: Sequence[Mapping[str, Any]]) -> Dict[str, torch.Tensor]:
         # En esta versión optimizada, asumimos que el dataset ya devolvió 
         # el dict procesado (posiblemente vía sequence_builder en __getitem__).
@@ -45,6 +83,9 @@ class _CollateFn:
             # Pre-asignación de tensores en CPU (el DataLoader se encarga de pin_memory)
             input_values_batch = torch.zeros(batch_size, max_len, input_dim, dtype=torch.float32)
             input_timestamps_batch = torch.zeros(batch_size, max_len, dtype=torch.float32)
+            input_observation_counts_batch = torch.zeros(
+                batch_size, max_len, dtype=torch.float32
+            )
             is_target_mask_batch = torch.zeros(batch_size, max_len, dtype=torch.bool)
             padding_mask_batch = torch.ones(batch_size, max_len, dtype=torch.bool)  # True = padding
 
@@ -68,6 +109,10 @@ class _CollateFn:
                 # Left-padding: mantiene los tokens target al final global.
                 input_values_batch[i, start:end] = p["input_values"]
                 input_timestamps_batch[i, start:end] = p["input_timestamps"]
+                input_observation_counts_batch[i, start:end] = p.get(
+                    "input_observation_counts",
+                    torch.ones(L, dtype=torch.float32),
+                )
                 is_target_mask_batch[i, start:end] = p["is_target_mask"]
                 padding_mask_batch[i, start:end] = False
                 
@@ -82,6 +127,7 @@ class _CollateFn:
             out = {
                 "input_values": input_values_batch,
                 "input_timestamps": input_timestamps_batch,
+                "input_observation_counts": input_observation_counts_batch,
                 "is_target_mask": is_target_mask_batch,
                 "padding_mask": padding_mask_batch,
                 "target_values": target_values_batch,
@@ -92,12 +138,20 @@ class _CollateFn:
                 out["input_sensor_ids"] = input_sensor_ids_batch
             if has_target_loss_mask:
                 out["target_loss_mask"] = target_loss_mask_batch
+            self._add_temporal_metadata(out, samples)
             return out
         else:
             # Sin padding: devolvemos listas o stacks simples
             out = {
                 "input_values": [p["input_values"] for p in samples],
                 "input_timestamps": [p["input_timestamps"] for p in samples],
+                "input_observation_counts": [
+                    p.get(
+                        "input_observation_counts",
+                        torch.ones(p["input_values"].shape[0], dtype=torch.float32),
+                    )
+                    for p in samples
+                ],
                 "is_target_mask": [p["is_target_mask"] for p in samples],
                 "target_values": torch.stack([p["target_values"] for p in samples], dim=0),
                 "target_timestamps": torch.stack([p["target_timestamp"] for p in samples], dim=0),
@@ -108,6 +162,8 @@ class _CollateFn:
                 out["input_sensor_ids"] = [p["input_sensor_ids"] for p in samples]
             if "target_loss_mask" in first:
                 out["target_loss_mask"] = torch.stack([p["target_loss_mask"] for p in samples], dim=0)
+
+            self._add_temporal_metadata(out, samples)
 
             return out
 

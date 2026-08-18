@@ -9,7 +9,11 @@ Incluye:
 - Funciones de split temporal train/val/test.
 """
 
-from .timeseries_dataset import TimeSeriesDataset, EventTimeSeriesDataset
+from .timeseries_dataset import (
+    TimeSeriesDataset,
+    EventTimeSeriesDataset,
+    TimeSeriesDatasetConfig,
+)
 from .sequence_builder import SequenceBuilder
 from .collate import build_collate_fn
 from .samplers import BucketBatchSampler
@@ -22,6 +26,7 @@ from .splits import (
 __all__ = [
     "TimeSeriesDataset",
     "EventTimeSeriesDataset",
+    "TimeSeriesDatasetConfig",
     "SequenceBuilder",
     "build_collate_fn",
     "BucketBatchSampler",

@@ -179,9 +179,9 @@ def _timestamps_to_float(col: pd.Series) -> np.ndarray:
     """
     if np.issubdtype(col.dtype, np.datetime64):
         # ns -> s
-        return (col.view("int64") / 1e9).astype("float32")
+        return (col.view("int64") / 1e9).astype("float64")
     else:
-        return col.astype("float32").to_numpy()
+        return col.astype("float64").to_numpy()
 
 
 def _worker_init_fn(worker_id: int):

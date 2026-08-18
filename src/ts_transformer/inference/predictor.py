@@ -98,7 +98,13 @@ class Predictor:
                 use_sensor_ids=use_sensor_ids,
                 num_sensors=int(model.config.num_sensors),
                 num_target_tokens=num_target_tokens,
-                target_sensor_ids=None,
+                # En modo evento cada query debe identificar el canal que
+                # predice. El id especial ``num_sensors`` servía como token
+                # genérico en modelos antiguos, pero elimina la identidad de
+                # canal y queda fuera de rango en features temporales por sensor.
+                target_sensor_ids=(
+                    list(range(model.output_dim)) if use_sensor_ids else None
+                ),
             )
         self.sequence_builder = sequence_builder
 
@@ -195,7 +201,7 @@ class Predictor:
 
         target_timestamps_t = torch.as_tensor(
             [float(timestamp) for timestamp in target_timestamps],
-            dtype=torch.float32,
+            dtype=torch.float64,
         )
         if target_timestamps_t.numel() == 0:
             raise ValueError("target_timestamps debe contener al menos un timestamp.")
@@ -236,7 +242,16 @@ class Predictor:
         input_timestamps = seq["input_timestamps"].unsqueeze(0).repeat(
             num_targets, 1
         )
-        input_timestamps[:, target_positions] = target_timestamps_t.unsqueeze(1).expand(
+        if self.sequence_builder.relative_timestamps:
+            # Restar en fp64 antes del cast conserva gaps pequeños incluso con
+            # timestamps UNIX grandes. Debe usar el mismo origen que la historia
+            # ya construida por SequenceBuilder.
+            target_times_for_model = (
+                target_timestamps_t - seq["time_origin"].to(torch.float64)
+            ).to(input_timestamps.dtype)
+        else:
+            target_times_for_model = target_timestamps_t.to(input_timestamps.dtype)
+        input_timestamps[:, target_positions] = target_times_for_model.unsqueeze(1).expand(
             -1, tokens_per_target
         )
         input_timestamps = input_timestamps.to(self.device)
@@ -294,7 +309,9 @@ class Predictor:
 
     @staticmethod
     def _to_tensor_1d(x: ArrayLike, name: str) -> torch.Tensor:
-        x_arr = torch.as_tensor(x, dtype=torch.float32)
+        # Timestamps absolutos necesitan float64; los encoders los recentran
+        # antes de proyectar la representación temporal a float32.
+        x_arr = torch.as_tensor(x, dtype=torch.float64)
         if x_arr.ndim != 1:
             raise ValueError(
                 f"{name} debe ser 1D [L], pero recibió shape {tuple(x_arr.shape)}."

@@ -51,7 +51,12 @@ from ts_transformer.data import (
 )
 from ts_transformer.data.timeseries_dataset import TimeSeriesDatasetConfig
 from ts_transformer.data.sequence_builder import AutoregressiveSequenceBuilder
-from ts_transformer.models import TimeSeriesEncoderDecoder, TimeSeriesTransformer
+from ts_transformer.models import (
+    QueryCrossAttentionConfig,
+    TimeSeriesEncoderDecoder,
+    TimeSeriesQueryCrossAttention,
+    TimeSeriesTransformer,
+)
 from ts_transformer.training import Trainer
 from ts_transformer.training.metrics import (
     compute_regression_metrics,
@@ -84,6 +89,11 @@ EXPERIMENTAL_MODEL_NAMES = (
     "Custom-LearnableScale",
     "Custom-RoPE",
     "Custom-TimeWindow",
+    "Custom-QueryCross",
+    "Custom-QueryCross-NoTime",
+    "Custom-QueryCross-QueryOnly",
+    "Custom-QueryCross-CTSSM",
+    "Custom-QueryCross-Gaussian",
 )
 MODEL_NAMES = CORE_MODEL_NAMES + EXPERIMENTAL_MODEL_NAMES
 DEFAULT_MODEL_NAMES = tuple(
@@ -149,6 +159,12 @@ def parse_args() -> argparse.Namespace:
             "Radio temporal normalizado para Custom-TimeWindow. "
             "Sólo se usa al solicitar esa variante experimental."
         ),
+    )
+    parser.add_argument(
+        "--temporal-min-neighbors",
+        type=int,
+        default=64,
+        help="Mínimo de vecinos cronológicos para Custom-TimeWindow.",
     )
     parser.add_argument("--limit-datasets", type=int, default=None, help="Sólo para pruebas de humo.")
     parser.add_argument(
@@ -282,7 +298,9 @@ def read_observations(
             columns.append("clean_value")
         frame = pd.read_parquet(observations_path, columns=columns)
         frame = frame.sort_values(["time", "event_index"], kind="stable")
-        timestamps = frame["time"].to_numpy(dtype=np.float32)
+        # Preserve absolute time in float64.  Relative deltas are formed per
+        # sequence before any float32 projection inside the time encoders.
+        timestamps = frame["time"].to_numpy(dtype=np.float64)
         values = frame[["value"]].to_numpy(dtype=np.float32)
         splits = frame["split"].astype(str).to_numpy()
         result = (timestamps, values, splits, ["x00"])
@@ -307,7 +325,7 @@ def read_observations(
     values_frame = frame.pivot(index="time", columns="channel_index", values="value").sort_index()
     values_frame = values_frame.reindex(columns=range(int(frame["channel_index"].max()) + 1))
     split_by_time = frame.drop_duplicates("time", keep="last").set_index("time")["split"]
-    timestamps = values_frame.index.to_numpy(dtype=np.float32)
+    timestamps = values_frame.index.to_numpy(dtype=np.float64)
     values = values_frame.to_numpy(dtype=np.float32)
     splits = split_by_time.reindex(values_frame.index).astype(str).to_numpy()
     result = (
@@ -640,6 +658,7 @@ def build_models(
     model_seed: int | None = None,
     include_experimental: bool = False,
     experimental_temporal_window: float = 8.0,
+    experimental_temporal_min_neighbors: int = 64,
 ) -> dict[str, ModelRunSpec]:
     config = copy.deepcopy(model_cfg)
     config.input_dim = data["model_input_dim"]
@@ -688,7 +707,9 @@ def build_models(
     reset_initialization_seed()
     time_bias_config = apply_model_recipe(config, recipes, "Custom")
     time_bias_config.use_temporal_attn_bias = True
-    time_bias_config.temporal_bias_layers = 1
+    # El tiempo relativo debe participar en cada decisión atencional; limitar
+    # el bias a la primera capa permite que las capas posteriores lo ignoren.
+    time_bias_config.temporal_bias_layers = None
     models["Custom-TimeBias"] = ModelRunSpec(
         TimeSeriesTransformer(time_bias_config),
         trainable=True,
@@ -713,6 +734,9 @@ def build_models(
 
         window_config = apply_model_recipe(config, recipes, "Custom")
         window_config.temporal_attention_window = float(experimental_temporal_window)
+        window_config.temporal_attention_min_neighbors = int(
+            experimental_temporal_min_neighbors
+        )
         window_config.use_temporal_attn_bias = False
         experimental_configs["Custom-TimeWindow"] = window_config
 
@@ -720,6 +744,54 @@ def build_models(
             reset_initialization_seed()
             models[model_name] = ModelRunSpec(
                 TimeSeriesTransformer(experimental_config),
+                trainable=True,
+                training_family="Custom",
+                model_size=OPTIMIZED_SIZE,
+            )
+
+        query_base_config = apply_model_recipe(config, recipes, "Custom")
+        query_variants = {
+            "Custom-QueryCross": (
+                query_base_config,
+                QueryCrossAttentionConfig(),
+            ),
+            "Custom-QueryCross-NoTime": (
+                query_base_config,
+                QueryCrossAttentionConfig(
+                    use_relative_time_bias=False,
+                    use_temporal_film=False,
+                    use_query_horizon=False,
+                    use_history_time_encoding=False,
+                    use_ctssm=False,
+                ),
+            ),
+            "Custom-QueryCross-QueryOnly": (
+                query_base_config,
+                QueryCrossAttentionConfig(
+                    use_relative_time_bias=False,
+                    use_temporal_film=False,
+                    use_query_horizon=True,
+                    use_history_time_encoding=False,
+                    use_ctssm=False,
+                ),
+            ),
+            "Custom-QueryCross-CTSSM": (
+                query_base_config,
+                QueryCrossAttentionConfig(use_ctssm=True),
+            ),
+        }
+        gaussian_query_config = copy.deepcopy(query_base_config)
+        gaussian_query_config.prediction_head = "gaussian"
+        query_variants["Custom-QueryCross-Gaussian"] = (
+            gaussian_query_config,
+            QueryCrossAttentionConfig(),
+        )
+        for model_name, (query_model_config, query_config) in query_variants.items():
+            reset_initialization_seed()
+            models[model_name] = ModelRunSpec(
+                TimeSeriesQueryCrossAttention(
+                    copy.deepcopy(query_model_config), query_config
+                ),
                 trainable=True,
                 training_family="Custom",
                 model_size=OPTIMIZED_SIZE,
@@ -999,6 +1071,7 @@ def main() -> None:
                     model_seed=args.seeds[0],
                     include_experimental=include_experimental,
                     experimental_temporal_window=args.temporal_window,
+                    experimental_temporal_min_neighbors=args.temporal_min_neighbors,
                 ),
                 requested_models,
             )
@@ -1048,6 +1121,7 @@ def main() -> None:
                     model_seed=seed,
                     include_experimental=include_experimental,
                     experimental_temporal_window=args.temporal_window,
+                    experimental_temporal_min_neighbors=args.temporal_min_neighbors,
                 ),
                 requested_models,
             )
