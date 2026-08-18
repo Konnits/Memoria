@@ -1,7 +1,7 @@
 \chapter{Detalles de optimización y scheduler}
 \label{anexo:optimizacion-scheduler}
 
-Este anexo complementa la descripción general de optimización presentada en el Anexo~\ref{anexo:fundamentos-redes}. En particular, se detalla la configuración usada en el benchmark final: optimización con AdamW y una política de tasa de aprendizaje con calentamiento lineal seguido de decaimiento coseno.
+Este anexo complementa la descripción general de optimización presentada en el Anexo~\ref{anexo:fundamentos-redes}. Ambos protocolos usan AdamW, pero no el mismo scheduler: el benchmark legado emplea calentamiento lineal seguido de decaimiento coseno; la evaluación física congelada emplea \textttbreak{CosineAnnealingLR} sin calentamiento.
 
 \section{AdamW}
 \label{anexo:adamw}
@@ -23,10 +23,10 @@ Si $\theta_t$ representa los parámetros, $\eta_t$ la tasa de aprendizaje de la 
 \end{equation}
 donde $\lambda$ controla el decaimiento de pesos. La idea importante para esta memoria es que $\eta_t$ no se mantiene constante: se modifica durante el entrenamiento mediante un scheduler.
 
-\section{Calentamiento lineal y decaimiento coseno}
+\section{Benchmark legado: calentamiento lineal y decaimiento coseno}
 \label{anexo:warmup-cosine}
 
-En los experimentos principales no se usa un CosineAnnealingLR puro, sino una variante con \textbf{calentamiento lineal} (\emph{linear warmup}) seguido de \textbf{decaimiento coseno}. El calentamiento lineal evita comenzar el entrenamiento con una tasa de aprendizaje demasiado alta cuando los pesos todavía no han estabilizado sus representaciones internas. Esta práctica es especialmente útil en arquitecturas Transformer, donde las capas de atención, normalización y proyecciones lineales pueden ser sensibles a los primeros pasos de optimización.
+En el benchmark legado no se usa un CosineAnnealingLR puro, sino una variante con \textbf{calentamiento lineal} (\emph{linear warmup}) seguido de \textbf{decaimiento coseno}. El calentamiento lineal evita comenzar el entrenamiento con una tasa de aprendizaje demasiado alta cuando los pesos todavía no han estabilizado sus representaciones internas. Esta práctica es especialmente útil en arquitecturas Transformer, donde las capas de atención, normalización y proyecciones lineales pueden ser sensibles a los primeros pasos de optimización.
 
 Sea $\eta_{\max}$ la tasa de aprendizaje base, $E$ el número máximo de épocas, $w$ el número de épocas de calentamiento y $e$ la época actual, indexada desde $0$. La tasa de aprendizaje efectiva se define como:
 \begin{equation}
@@ -54,13 +54,13 @@ La primera rama aumenta la tasa de aprendizaje de forma aproximadamente lineal h
 
 En la implementación, el scheduler se actualiza una vez por época. Para modelos pequeños y medianos se utiliza $E=30$ con $w=2$, para modelos grandes se utiliza $E=60$ con $w=5$. En variantes más inestables se mantiene la misma forma funcional, pero se aumenta el calentamiento mínimo a cinco épocas y se reduce la tasa de aprendizaje base.
 
-\section{Diferencia con CosineAnnealingLR}
+\section{Evaluación física: CosineAnnealingLR sin warmup}
 \label{anexo:diferencia-cosine}
 
-CosineAnnealingLR corresponde al decaimiento coseno sin etapa inicial de calentamiento. En cambio, la configuración principal de esta memoria usa una política compuesta:
+CosineAnnealingLR corresponde al decaimiento coseno sin etapa inicial de calentamiento. La evaluación física congelada usa esta política directamente. En cambio, la configuración legada usa la política compuesta:
 \[
     \text{linear warmup}
     \quad \longrightarrow \quad
     \text{cosine decay}.
 \]
-Por lo tanto, cuando en el texto se habla de decaimiento coseno debe entenderse esta versión con calentamiento, salvo que se indique explícitamente lo contrario. Esta precisión es relevante porque el calentamiento modifica las primeras épocas de entrenamiento y fue parte de la receta usada para mejorar estabilidad en el benchmark final.
+Por lo tanto, ``coseno'' no debe interpretarse de forma única en esta memoria: \emph{warmup + cosine decay} identifica la receta legada, mientras \textttbreak{CosineAnnealingLR} identifica la receta física sin warmup. Esta distinción forma parte de la configuración versionada y evita atribuir al modelo diferencias debidas al optimizador.

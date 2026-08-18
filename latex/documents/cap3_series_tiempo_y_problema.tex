@@ -80,17 +80,17 @@ Estas características motivan la necesidad de modelos capaces de incorporar exp
 
 La memoria considera dos escenarios generales de datos:
 \begin{itemize}
-    \item \textbf{Datos sintéticos}, utilizados como entorno controlado para validar el comportamiento básico del pipeline y de la arquitectura en un contexto donde la generación de la serie puede analizarse con mayor trazabilidad.
-    \item \textbf{Datos reales procesados}, organizados como una colección de datasets temporales independientes, sobre los cuales se ejecuta el benchmark principal reportado en los capítulos experimentales.
+    \item \textbf{Datos reales procesados del benchmark legado}, organizados como cinco series temporales independientes. En ese protocolo las ventanas y offsets se definen por cantidad de eventos.
+    \item \textbf{Datos sintéticos del benchmark físico}, organizados en ocho presets, cada uno con una unidad univariada y otra multivariada asincrónica. Cada unidad conserva por separado observaciones irregulares con ruido y una trayectoria limpia densa usada como fuente de targets.
 \end{itemize}
 
 \hfill
 
-En ambos casos, la estructura de trabajo es esencialmente la misma: cada dataset contiene una columna temporal que fija el orden de observación y una o más variables numéricas que actúan como entradas y objetivos de predicción. En la etapa actualmente consolidada de esta memoria, el benchmark principal se apoya sobre datasets reales procesados con una variable objetivo escalar, de modo que el problema experimental activo corresponde a forecasting univariado con timestamps irregulares.
+Ambos escenarios comparten una separación temporal de entrenamiento, validación y prueba, pero no comparten el mismo estimando. El protocolo legado pregunta por desempeño a offsets ordinales sobre datos reales; el protocolo físico pregunta si el modelo identifica duraciones y gaps reales en procesos sintéticos controlados. Sus scores no se comparan directamente.
 
 \hfill
 
-La razón para considerar tanto datos sintéticos como reales es metodológica. Los datos sintéticos permiten verificar que el pipeline de construcción de ventanas, escalado, entrenamiento y predicción funciona de extremo a extremo bajo condiciones más controladas. Los datos reales, en cambio, permiten evaluar si la arquitectura mantiene un comportamiento competitivo en escenarios más cercanos a una aplicación práctica, donde la irregularidad temporal y la variabilidad entre datasets son parte central del problema.
+La separación es metodológica. Los datos reales aportan una prueba de factibilidad y relevancia aplicada, pero no entregan una trayectoria contrafactual limpia en instantes sin observación. Los datos sintéticos permiten consultar esa trayectoria en tiempos arbitrarios, variar controladamente el patrón de muestreo y ejecutar corruptelas temporales emparejadas. Por ello son el dominio apropiado para atribuir efectos al uso del tiempo físico, aunque no establecen validez externa sobre sistemas reales.
 
 \hfill
 
@@ -129,8 +129,9 @@ donde $k$ es el número de pasos hacia adelante.
 
 En esta memoria se adopta una formulación que combina ambas visiones:
 \begin{itemize}
-    \item A nivel de construcción del dataset, se define un \textit{offset de predicción} $o$ que indica cuántos índices después del \emph{anchor} se tomará el target en la secuencia original.
-    \item A nivel del modelo, además, se utilizan los timestamps reales $t_i$ para construir tiempos relativos respecto del primer timestamp válido de la ventana. Así, tanto las observaciones históricas como el instante objetivo se expresan en una escala común, la distancia temporal entre la última observación de la historia y el objetivo queda disponible como diferencia entre sus tiempos relativos, no como un cambio del origen temporal.
+    \item En el protocolo legado, un \textit{offset de predicción} $o$ indica cuántos eventos después del \emph{anchor} se toma el target.
+    \item En el protocolo físico, el horizonte es una duración $\delta>0$ y la consulta se fija en $t^\star=t_0+\delta$, donde $t_0$ se toma de la grilla de la trayectoria latente limpia con una regla independiente de la llegada de eventos.
+    \item En ambos casos los timestamps absolutos se recentran dentro de la ventana. En el protocolo físico esta resta se realiza en precisión \textttbreak{float64} y sólo los tiempos relativos se convierten a la precisión de la red.
 \end{itemize}
 
 Más concretamente, para cada ejemplo se elige un índice \emph{anchor} $a$ (que marca el final de la historia) y un offset de predicción $o \ge 0$. El índice del target será entonces:
@@ -146,6 +147,18 @@ Durante el entrenamiento se pueden considerar:
     \item Un único offset fijo (por ejemplo, siempre predecir un paso adelante).
     \item Un conjunto discreto de offsets posibles (por ejemplo $\{1, 3, 5\}$), que se muestren aleatoriamente. Esto permite entrenar al modelo para manejar distintos horizontes dentro de un mismo esquema.
 \end{itemize}
+
+\subsection{Contrato de tiempo físico e identificabilidad}
+
+Para una duración histórica $D$ y un origen de forecast $t_0$, el contexto físico se define como
+\begin{equation}
+    \mathcal{H}_{D}(t_0)=\{(t_i,\mathbf{x}_i):t_0-D\leq t_i\leq t_0\}.
+\end{equation}
+Todos los ejemplos cubren así el mismo intervalo físico, aunque contengan distinta cantidad de eventos. Si la historia excede el presupuesto computacional, se submuestrea preservando cobertura temporal; una historia vacía se descarta y no se fabrica una observación cero.
+
+Cada ejemplo contiene varias consultas $t_m^\star=t_0+\delta_m$. En entrenamiento los $\delta_m$ se muestrean log-uniformemente en $[0.25,8.0]$; en evaluación se usan $\{0.25,1.0,3.0,8.0\}$. Su orden se permuta reproduciblemente para impedir que el índice del token revele el horizonte. El target $\mathbf{y}(t_m^\star)$ se obtiene por interpolación lineal de la trayectoria sintética limpia y no del siguiente evento observado.
+
+La información temporal es \emph{identificable} sólo si cambiarla manteniendo valores, consultas y targets emparejados puede alterar el desempeño de un modelo que la utiliza, y si controles sin tiempo físico no recuperan la misma señal mediante proxies. Por ello el protocolo compara tiempo real con timestamps igualados, gaps permutados, grilla regular, representación ordinal y vistas que conservan sólo historia o sólo queries. También contrasta persistencia, un control ordinal y un regresor con horizonte físico explícito antes de interpretar resultados neuronales.
 
 \section{Construcción de ejemplos supervisados}
 
@@ -200,7 +213,7 @@ En términos más operativos, es útil separar:
     \]
 \end{itemize}
 
-La familia \CTTransformer\ recibirá como entrada una representación construida a partir de la historia y del timestamp objetivo. En la arquitectura base esto se realiza mediante la adición de tokens objetivo a la misma secuencia de entrada, en la variante encoder--decoder, esos tokens se procesan en el decoder y consultan la historia codificada por el encoder. En ambos casos, el modelo deberá producir una estimación $\widehat{\mathbf{y}}^{(\text{target})}$ de la salida verdadera. Los detalles de esta representación se desarrollan en el capítulo dedicado al modelo Transformer.
+La familia \CTTransformer\ recibe una representación construida a partir de la historia y de los timestamps objetivo. En la arquitectura base se añaden tokens objetivo a la secuencia; en encoder--decoder se procesan en el decoder; en \QueryCross\ son consultas independientes que nunca entran al encoder, y en \ContinuousBasis\ evalúan una función explícita del horizonte. Los detalles se desarrollan en el capítulo dedicado al modelo.
 
 \section{Formulación como problema de aprendizaje supervisado}
 

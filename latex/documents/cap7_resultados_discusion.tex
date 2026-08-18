@@ -1,20 +1,20 @@
 \chapter{Resultados y discusión}
 \label{cap:resultados}
 
-Este capítulo presenta los resultados finales de la fase experimental definida en el Capítulo~\ref{cap:experimentos}. El análisis usa el subconjunto balanceado del archivo \textttbreak{benchmark\_final.csv}: datasets 1--5, semillas 42, 84 y 126, y sólo modelos con las 15 corridas completas. En total, el subconjunto final contiene 360 corridas, correspondientes a 24 modelos.
+Este capítulo mantiene separados los resultados del benchmark legado real y el reporte de la evaluación física sintética. El análisis legado usa el subconjunto balanceado del archivo \textttbreak{benchmark\_final.csv}: datasets 1--5, semillas 42, 84 y 126, y sólo modelos con las 15 ejecuciones completas. En total existen 360 ejecuciones de optimización para 24 modelos, pero sólo cinco unidades experimentales independientes.
 
 \hfill
 
-Las tablas reportan la media y el intervalo de confianza de la distribución t de Student al 95\% sobre 15 corridas individuales (5 datasets $\times$ 3 semillas), tratándolas como observaciones independientes para aumentar la potencia estadística de los análisis. Valores menores indican mejor desempeño. La métrica principal es MSE; RMSE y MAE se usan como métricas complementarias.
+Las tres semillas de un mismo dataset son repeticiones del proceso de optimización, no réplicas científicas adicionales. Por ello se promedian primero dentro de dataset y sólo después entre los cinco datasets. Como el diseño balanceado asigna tres semillas a cada serie, esta corrección no cambia las medias publicadas, pero sí invalida los intervalos y pruebas que trataban $5\times3=15$ filas como independientes. Las tablas siguientes muestran sólo medias descriptivas. Valores menores indican mejor desempeño.
 
-\section{Cobertura final del benchmark}
+\section{Cobertura del benchmark legado}
 \label{sec:cobertura-benchmark-final}
 
 La Tabla~\ref{tab:cobertura-final} resume la cobertura utilizada para el análisis final. El archivo de resultados contiene algunas filas adicionales de corridas parciales, pero no se usan para las conclusiones porque no forman parte del conjunto balanceado.
 
 \begin{table}[H]
 	\centering
-	\caption{Cobertura final usada en el análisis.}
+	\caption{Cobertura balanceada del benchmark legado real.}
 	\label{tab:cobertura-final}
 	\begin{tabular}{lcc}
 		\toprule
@@ -34,19 +34,12 @@ La Tabla~\ref{tab:cobertura-final} resume la cobertura utilizada para el anális
 \section{Metodología de presentación y análisis de resultados}
 \label{sec:metodologia-analisis-resultados}
 
-Para asegurar la validez científica y el rigor de las comparaciones presentadas en este capítulo, se adoptan las siguientes definiciones y metodologías estadísticas:
+Para evitar pseudorreplicación se adopta una agregación jerárquica:
 
 \begin{itemize}
-	\item \textbf{Intervalos de Confianza t-Student}: En lugar del formato tradicional de media más/menos desviación estándar (que solo describe la dispersión muestral), cada métrica principal se reporta mediante su media y su intervalo de confianza al 95\% para la media poblacional. Este se calcula utilizando la distribución t de Student con $n-1$ grados de libertad:
-	$$\bar{x} \pm t_{\alpha/2, n-1} \frac{s}{\sqrt{n}}$$
-	donde $\bar{x}$ es la media muestral, $s$ es la desviación estándar muestral, $n = 15$ es el número de corridas independientes (5 datasets $\times$ 3 semillas) y $t_{\alpha/2, 14} \approx 2.145$ es el valor crítico para $\alpha = 0.05$ bilateral. Este intervalo define el rango en el cual se sitúa el verdadero error medio esperado del modelo con un 95\% de certeza.
-	
-	\item \textbf{Pruebas de Significancia Estadística Emparejadas}: Dado que todos los modelos se evalúan exactamente sobre el mismo conjunto de datasets y semillas, los resultados de desempeño están emparejados. Por ello, para contrastar si la superioridad del modelo ganador es estadísticamente significativa frente a las alternativas, se aplican dos pruebas bilaterales:
-	\begin{enumerate}
-		\item \emph{Prueba t de Student para muestras emparejadas}: Evalúa si la diferencia media de los errores entre dos modelos es significativamente distinta de cero, asumiendo normalidad en las diferencias de error.
-		\item \emph{Prueba de rangos con signo de Wilcoxon}: Alternativa no paramétrica que no asume normalidad, basada en el orden de los rangos de las diferencias.
-	\end{enumerate}
-	Un p-value ($p$) menor a $0.05$ se considera suficiente para rechazar la hipótesis nula ($H_0$) de igualdad de rendimiento, declarando una ventaja estadísticamente significativa.
+    \item \textbf{Nivel semilla}: para cada modelo y dataset se promedian las semillas 42, 84 y 126. Esta media estima el desempeño esperado respecto de la aleatoriedad de entrenamiento para esa serie.
+    \item \textbf{Nivel dataset}: los cinco promedios anteriores reciben el mismo peso. La media resultante es descriptiva del conjunto de series evaluado; con $n=5$ no se presenta como una estimación precisa de una población amplia de datasets.
+    \item \textbf{Comparaciones emparejadas}: las diferencias entre modelos se calculan después de promediar semillas y se examinan por dataset. No se reutilizan las 15 filas como grados de libertad. Una eventual inferencia sobre múltiples modelos requeriría además corrección por comparaciones múltiples.
 	
 	\item \textbf{Métricas de Error}: Se reportan tres métricas complementarias para evaluar distintas propiedades de las predicciones:
 	\begin{enumerate}
@@ -55,13 +48,13 @@ Para asegurar la validez científica y el rigor de las comparaciones presentadas
 		\item \emph{MAE (Mean Absolute Error)}: Promedio de los errores absolutos. Es más robusto frente a valores atípicos y describe el error promedio típico.
 	\end{enumerate}
 	
-	\item \textbf{Victorias}: Indica la proporción de datasets (en este caso, de los 5 datasets balanceados) en los cuales el modelo respectivo obtuvo el menor MSE promedio.
+    \item \textbf{Victorias}: indica la proporción de los cinco datasets en que el modelo obtuvo el menor MSE después de promediar semillas.
 \end{itemize}
 
-\section{Resultado principal}
+\section{Resultado principal del benchmark legado}
 \label{sec:resultado-principal-final}
 
-El mejor desempeño observado en la evaluación final corresponde a \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}. Esta variante obtiene el menor MSE, RMSE y MAE, y gana en los 5 de 5 datasets al comparar promedios por dataset.
+El mejor desempeño observado en la evaluación legada corresponde a \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}. Esta variante obtiene el menor MSE, RMSE y MAE, y gana en los 5 de 5 datasets al comparar promedios por dataset.
 
 \hfill
 
@@ -73,7 +66,7 @@ La Tabla~\ref{tab:resultados-finales-principales} compara el modelo ganador con 
 
 \begin{table}[H]
 	\centering
-	\caption{Resultados finales de modelos representativos.}
+	\caption{Medias descriptivas de modelos representativos en el benchmark legado.}
 	\label{tab:resultados-finales-principales}
 	\scriptsize
 	\resizebox{\textwidth}{!}{%
@@ -81,14 +74,14 @@ La Tabla~\ref{tab:resultados-finales-principales} compara el modelo ganador con 
 		\toprule
 		Modelo & MSE & RMSE & MAE & Parámetros & Tiempo medio & Victorias \\
 		\midrule
-		EncDec-Opt pequeño MT8 + AR contiguo & \textbf{0.1979 [0.1702, 0.2257]} & \textbf{0.4417 [0.4110, 0.4724]} & \textbf{0.2193 [0.1949, 0.2437]} & 117.8K & 0.46 h & 5/5 \\
-		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & 0.2807 [0.2443, 0.3170] & 0.5265 [0.4927, 0.5603] & 0.2906 [0.2519, 0.3293] & 67.8K & 0.74 h & 0/5 \\
-		\CTTransformerSmall & 0.2817 [0.2456, 0.3178] & 0.5275 [0.4940, 0.5611] & 0.2935 [0.2526, 0.3343] & 67.4K & 0.69 h & 0/5 \\
-		\CTTransformerBase & 0.2906 [0.2568, 0.3244] & 0.5363 [0.5054, 0.5673] & 0.2859 [0.2471, 0.3247] & 636.2K & 0.92 h & 0/5 \\
-		Modelo lineal temporal & 0.2919 [0.2558, 0.3281] & 0.5372 [0.5043, 0.5702] & 0.3286 [0.2871, 0.3700] & 10.8K & 0.69 h & 0/5 \\
-		STraTS adaptado & 0.3274 [0.2765, 0.3783] & 0.5668 [0.5219, 0.6118] & 0.3205 [0.2763, 0.3647] & 229.2K & 0.63 h & 0/5 \\
-		Persistencia & 0.4201 [0.3144, 0.5258] & 0.6365 [0.5664, 0.7066] & 0.3435 [0.2530, 0.4341] & 0 efectivos & 0.00 h & 0/5 \\
-		CoFormer univariado & 0.5663 [0.5198, 0.6127] & 0.7506 [0.7200, 0.7812] & 0.4464 [0.3883, 0.5046] & 693.4K & 0.22 h & 0/5 \\
+		EncDec-Opt pequeño MT8 + AR contiguo & \textbf{0.1979} & \textbf{0.4417} & \textbf{0.2193} & 117.8K & 0.46 h & 5/5 \\
+		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & 0.2807 & 0.5265 & 0.2906 & 67.8K & 0.74 h & 0/5 \\
+		\CTTransformerSmall & 0.2817 & 0.5275 & 0.2935 & 67.4K & 0.69 h & 0/5 \\
+		\CTTransformerBase & 0.2906 & 0.5363 & 0.2859 & 636.2K & 0.92 h & 0/5 \\
+		Modelo lineal temporal & 0.2919 & 0.5372 & 0.3286 & 10.8K & 0.69 h & 0/5 \\
+		STraTS adaptado & 0.3274 & 0.5668 & 0.3205 & 229.2K & 0.63 h & 0/5 \\
+		Persistencia & 0.4201 & 0.6365 & 0.3435 & 0 efectivos & 0.00 h & 0/5 \\
+		CoFormer univariado & 0.5663 & 0.7506 & 0.4464 & 693.4K & 0.22 h & 0/5 \\
 		\bottomrule
 	\end{tabular}}
 \end{table}
@@ -115,7 +108,7 @@ La Tabla~\ref{tab:encdec-final} muestra que el ajuste autoregresivo es el cambio
 
 \begin{table}[H]
 	\centering
-	\caption{Resultados finales de variantes encoder--decoder optimizadas.}
+	\caption{Medias descriptivas de variantes encoder--decoder en el benchmark legado.}
 	\label{tab:encdec-final}
 	\scriptsize
 	\resizebox{\textwidth}{!}{%
@@ -123,14 +116,14 @@ La Tabla~\ref{tab:encdec-final} muestra que el ajuste autoregresivo es el cambio
 		\toprule
 		Modelo & MSE & RMSE & MAE & Parámetros & Tiempo medio \\
 		\midrule
-		EncDec-Opt-Small-MT8 & 0.2945 [0.2575, 0.3314] & 0.5395 [0.5060, 0.5730] & 0.2859 [0.2491, 0.3226] & 117.8K & 0.30 h \\
-		EncDec-Opt-Small-MT8 + AR contiguo & \textbf{0.1979 [0.1702, 0.2257]} & \textbf{0.4417 [0.4110, 0.4724]} & \textbf{0.2193 [0.1949, 0.2437]} & 117.8K & 0.46 h \\
-		EncDec-Opt-Small-MT8 + AR mixto & 0.2043 [0.1767, 0.2320] & 0.4489 [0.4183, 0.4795] & 0.2248 [0.1994, 0.2501] & 117.8K & 0.47 h \\
-		EncDec-Opt-Small-MT8 + AR aleatorio & 0.2206 [0.1885, 0.2527] & 0.4659 [0.4317, 0.5001] & 0.2369 [0.2075, 0.2664] & 117.8K & 0.47 h \\
-		EncDec-Opt-MT8 & 0.3028 [0.2642, 0.3413] & 0.5470 [0.5125, 0.5814] & 0.2909 [0.2528, 0.3289] & 1.06M & 0.53 h \\
-		EncDec-Opt-MT8 + AR contiguo & 0.2102 [0.1775, 0.2429] & 0.4544 [0.4195, 0.4893] & 0.2240 [0.1978, 0.2502] & 1.06M & 0.76 h \\
-		EncDec-Opt-MT8 + AR mixto & 0.2172 [0.1833, 0.2512] & 0.4619 [0.4260, 0.4977] & 0.2285 [0.1997, 0.2572] & 1.06M & 0.79 h \\
-		EncDec-Opt-MT8 + AR aleatorio & 0.2424 [0.1993, 0.2855] & 0.4866 [0.4437, 0.5295] & 0.2430 [0.2095, 0.2764] & 1.06M & 0.79 h \\
+		EncDec-Opt-Small-MT8 & 0.2945 & 0.5395 & 0.2859 & 117.8K & 0.30 h \\
+		EncDec-Opt-Small-MT8 + AR contiguo & \textbf{0.1979} & \textbf{0.4417} & \textbf{0.2193} & 117.8K & 0.46 h \\
+		EncDec-Opt-Small-MT8 + AR mixto & 0.2043 & 0.4489 & 0.2248 & 117.8K & 0.47 h \\
+		EncDec-Opt-Small-MT8 + AR aleatorio & 0.2206 & 0.4659 & 0.2369 & 117.8K & 0.47 h \\
+		EncDec-Opt-MT8 & 0.3028 & 0.5470 & 0.2909 & 1.06M & 0.53 h \\
+		EncDec-Opt-MT8 + AR contiguo & 0.2102 & 0.4544 & 0.2240 & 1.06M & 0.76 h \\
+		EncDec-Opt-MT8 + AR mixto & 0.2172 & 0.4619 & 0.2285 & 1.06M & 0.79 h \\
+		EncDec-Opt-MT8 + AR aleatorio & 0.2424 & 0.4866 & 0.2430 & 1.06M & 0.79 h \\
 		\bottomrule
 	\end{tabular}}
 \end{table}
@@ -148,7 +141,7 @@ Dentro de las variantes encoder puras de \CTTransformer, la señal principal es 
 
 \begin{table}[H]
 	\centering
-	\caption{Resultados finales de variantes encoder de \CTTransformer.}
+	\caption{Medias descriptivas de variantes encoder de \CTTransformer\ en el benchmark legado.}
 	\label{tab:variantes-ct-final}
 	\scriptsize
 	\resizebox{\textwidth}{!}{%
@@ -156,16 +149,16 @@ Dentro de las variantes encoder puras de \CTTransformer, la señal principal es 
 		\toprule
 		Modelo & MSE & RMSE & MAE & Parámetros \\
 		\midrule
-		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & \textbf{0.2807 [0.2443, 0.3170]} & \textbf{0.5265 [0.4927, 0.5603]} & 0.2906 [0.2519, 0.3293] & 67.8K \\
-		\CTTransformer\ pequeño + sesgo temporal & 0.2808 [0.2447, 0.3168] & 0.5266 [0.4931, 0.5602] & 0.2915 [0.2529, 0.3300] & 67.6K \\
-		\CTTransformer\ pequeño + resumen atencional & 0.2817 [0.2455, 0.3178] & 0.5275 [0.4940, 0.5610] & 0.2934 [0.2541, 0.3326] & 82.1K \\
-		\CTTransformerSmall & 0.2817 [0.2456, 0.3178] & 0.5275 [0.4940, 0.5611] & 0.2935 [0.2526, 0.3343] & 67.4K \\
-		\CTTransformer\ pequeño + Time2Vec & 0.2824 [0.2463, 0.3184] & 0.5282 [0.4948, 0.5616] & 0.2938 [0.2540, 0.3335] & 67.8K \\
-		\CTTransformer\ base + Time2Vec + sesgo temporal & 0.2851 [0.2498, 0.3203] & 0.5309 [0.4984, 0.5634] & \textbf{0.2756 [0.2395, 0.3116]} & 794.9K \\
-		\CTTransformer\ base + sesgo temporal & 0.2846 [0.2483, 0.3208] & 0.5302 [0.4969, 0.5636] & 0.2777 [0.2411, 0.3143] & 794.4K \\
-		\CTTransformer\ base + Time2Vec & 0.2867 [0.2505, 0.3228] & 0.5323 [0.4990, 0.5655] & 0.2773 [0.2381, 0.3165] & 794.9K \\
-		\CTTransformer\ base + resumen atencional & 0.2869 [0.2506, 0.3231] & 0.5324 [0.4991, 0.5658] & 0.2799 [0.2406, 0.3193] & 852.1K \\
-		\CTTransformerBase & 0.2906 [0.2568, 0.3244] & 0.5363 [0.5054, 0.5673] & 0.2859 [0.2471, 0.3247] & 636.2K \\
+		\CTTransformer\ pequeño + Time2Vec + sesgo temporal & \textbf{0.2807} & \textbf{0.5265} & 0.2906 & 67.8K \\
+		\CTTransformer\ pequeño + sesgo temporal & 0.2808 & 0.5266 & 0.2915 & 67.6K \\
+		\CTTransformer\ pequeño + resumen atencional & 0.2817 & 0.5275 & 0.2934 & 82.1K \\
+		\CTTransformerSmall & 0.2817 & 0.5275 & 0.2935 & 67.4K \\
+		\CTTransformer\ pequeño + Time2Vec & 0.2824 & 0.5282 & 0.2938 & 67.8K \\
+		\CTTransformer\ base + Time2Vec + sesgo temporal & 0.2851 & 0.5309 & \textbf{0.2756} & 794.9K \\
+		\CTTransformer\ base + sesgo temporal & 0.2846 & 0.5302 & 0.2777 & 794.4K \\
+		\CTTransformer\ base + Time2Vec & 0.2867 & 0.5323 & 0.2773 & 794.9K \\
+		\CTTransformer\ base + resumen atencional & 0.2869 & 0.5324 & 0.2799 & 852.1K \\
+		\CTTransformerBase & 0.2906 & 0.5363 & 0.2859 & 636.2K \\
 		\bottomrule
 	\end{tabular}}
 \end{table}
@@ -183,7 +176,7 @@ La Tabla~\ref{tab:ablaciones-final} muestra las dos ablaciones principales. La e
 
 \begin{table}[H]
 	\centering
-	\caption{Ablaciones finales respecto de \CTTransformerBase.}
+	\caption{Ablaciones del benchmark legado respecto de \CTTransformerBase.}
 	\label{tab:ablaciones-final}
 	\scriptsize
 	\resizebox{\textwidth}{!}{%
@@ -191,10 +184,10 @@ La Tabla~\ref{tab:ablaciones-final} muestra las dos ablaciones principales. La e
 		\toprule
 		Modelo & MSE & RMSE & MAE & Parámetros \\
 		\midrule
-		\CTTransformerBase & 0.2906 [0.2568, 0.3244] & 0.5363 [0.5054, 0.5673] & \textbf{0.2859 [0.2471, 0.3247]} & 636.2K \\
-		Sin encoding temporal continuo & \textbf{0.2903 [0.2534, 0.3271]} & \textbf{0.5356 [0.5021, 0.5691]} & 0.2957 [0.2579, 0.3335] & 583.4K \\
-		Sin identificador de token objetivo & 0.3028 [0.2698, 0.3357] & 0.5478 [0.5177, 0.5778] & 0.3027 [0.2680, 0.3374] & 600.7K \\
-		\CTTransformerSmall & 0.2817 [0.2456, 0.3178] & 0.5275 [0.4940, 0.5611] & 0.2935 [0.2526, 0.3343] & 67.4K \\
+		\CTTransformerBase & 0.2906 & 0.5363 & \textbf{0.2859} & 636.2K \\
+		Sin encoding temporal continuo & \textbf{0.2903} & \textbf{0.5356} & 0.2957 & 583.4K \\
+		Sin identificador de token objetivo & 0.3028 & 0.5478 & 0.3027 & 600.7K \\
+		\CTTransformerSmall & 0.2817 & 0.5275 & 0.2935 & 67.4K \\
 		\bottomrule
 	\end{tabular}}
 \end{table}
@@ -217,34 +210,68 @@ El aumento de tamaño no entrega una mejora clara. \CTTransformerBase\ usa 636.2
 \section{Significancia estadística y alcance}
 \label{sec:significancia-estadistica-final}
 
-Para robustecer las conclusiones sobre el desempeño relativo de los modelos y mitigar la limitación del tamaño de muestra al promediar semillas, se trataron las 15 corridas (5 datasets $\times$ 3 semillas) como observaciones independientes emparejadas por par (dataset, semilla). Sobre estas 15 corridas independientes se aplicaron dos pruebas estadísticas bilaterales para evaluar la significancia de la diferencia en MSE: la prueba t de Student para muestras emparejadas y la prueba no paramétrica de rangos con signo de Wilcoxon.
+Un análisis anterior aplicó pruebas t emparejadas y Wilcoxon sobre 15 pares (dataset, semilla). Esa unidad es incorrecta para generalizar entre series: las tres semillas comparten el mismo dataset y no son observaciones científicas independientes. Los valores $p$ obtenidos con $n=15$ se retiran y no sustentan las conclusiones de esta versión.
 
-\hfill
-
-Al comparar el modelo ganador, \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}, contra los baselines y variantes clave en la Tabla~\ref{tab:resultados-finales-principales}, los resultados son concluyentes:
-\begin{itemize}
-	\item \textbf{Frente a \CTTransformerBase}: La reducción de error es altamente significativa tanto en la prueba t de Student ($t = -20.55$, $p < 0.0001$) como en la prueba de Wilcoxon ($W = 0.0$, $p \approx 0.00006$).
-	\item \textbf{Frente a la mejor variante de encoder (\CTTransformer\ pequeño + Time2Vec + sesgo temporal)}: La ventaja del modelo encoder-decoder es también muy robusta estadísticamente ($t = -16.42$, $p < 0.0001$; Wilcoxon $W = 0.0$, $p \approx 0.00006$).
-	\item \textbf{Frente al Modelo lineal temporal}: Se observa significancia estadística rigurosa ($t = -18.28$, $p < 0.0001$; Wilcoxon $W = 0.0$, $p \approx 0.00006$).
-	\item \textbf{Frente a STraTS adaptado y Persistencia}: Las diferencias de medias favorecen al modelo ganador con un nivel de confianza superior al 99.9\% ($p < 0.0001$ en la prueba t de Student, y $W = 0.0$, $p \approx 0.00006$ en Wilcoxon).
-\end{itemize}
-
-Estos resultados indican que la superioridad del modelo ganador no es producto de fluctuaciones aleatorias en las semillas, sino que existe una diferencia de desempeño sistemática y estadísticamente significativa frente a todas las demás arquitecturas evaluadas bajo los mismos datasets y condiciones de entrenamiento.
+La comparación válida promedia primero las semillas y deja cinco diferencias emparejadas, una por dataset. El modelo encoder--decoder con AR contiguo obtiene menor MSE medio en las cinco series, lo que establece consistencia descriptiva dentro del conjunto observado. Sin embargo, incluso cinco signos concordantes producen un valor bilateral mínimo de $2/2^5=0.0625$ bajo una prueba exacta de signos. Por tanto, con umbral 0.05 no corresponde declarar significancia estadística ni extrapolar a una población de datasets. Las reducciones porcentuales, las victorias 5/5 y el costo computacional se interpretan como magnitud y consistencia observadas; requieren más unidades independientes para inferencia formal.
 
 \section{Discusión sobre MAPE}
 \label{sec:discusion-mape-final}
 
 El MAPE presenta alta variabilidad en las corridas actuales y, en algunas variantes autoregresivas, se registra en columnas auxiliares separadas. Esto es esperable cuando la variable objetivo puede acercarse a cero, porque pequeños denominadores inflan artificialmente el error porcentual. Por ello, el análisis principal se basa en MSE, RMSE y MAE.
 
+\section{Resultados de la evaluación física sintética}
+\label{sec:resultados-benchmark-fisico}
+
+Esta sección se puebla exclusivamente con artefactos producidos por el modo \textttbreak{report} después de completar la campaña definida en \nolinkurl{configs/benchmark/thesis_physical_final.yaml}. Los archivos provenientes de \textttbreak{smoke} no satisfacen la cobertura de 16 unidades principales, tres semillas y todos los modelos, y por tanto no se usan para ordenar arquitecturas ni formular conclusiones.
+
+\subsection{Estado y cobertura del protocolo}
+\IfFileExists{../experiments/thesis_physical_benchmark/latex/protocol_summary.tex}{%
+    \input{../experiments/thesis_physical_benchmark/latex/protocol_summary.tex}%
+}{%
+    \begin{quote}
+    \emph{Reporte físico pendiente.} No existe todavía \nolinkurl{protocol_summary.tex}; antes de interpretar resultados debe completarse \textttbreak{run} y luego ejecutarse \textttbreak{report}. La ausencia del archivo no se reemplaza con métricas de smoke.
+    \end{quote}
+}
+
+\subsection{Métricas puntuales y ranking principal}
+\IfFileExists{../experiments/thesis_physical_benchmark/latex/model_results.tex}{%
+    \input{../experiments/thesis_physical_benchmark/latex/model_results.tex}%
+}{%
+    \begin{quote}
+    \emph{Tabla pendiente.} El ranking puntual se incorporará sólo cuando \nolinkurl{model_results.tex} contenga la agregación semillas $\rightarrow$ unidad, modalidades $\rightarrow$ preset y macro-promedio entre los ocho presets.
+    \end{quote}
+}
+
+\subsection{Ablaciones y dificultad temporal}
+\IfFileExists{../experiments/thesis_physical_benchmark/latex/temporal_ablations.tex}{%
+    \input{../experiments/thesis_physical_benchmark/latex/temporal_ablations.tex}%
+}{%
+    \begin{quote}
+    \emph{Tabla pendiente.} \nolinkurl{temporal_ablations.tex} incorporará las ablaciones temporales y su desglose por horizonte. Los diagnósticos más detallados por gap, densidad y edad de la última observación permanecerán en los artefactos CSV de cada ejecución y del reporte; un promedio global no sustituye su inspección.
+    \end{quote}
+}
+
+\subsection{Calibración probabilística}
+\IfFileExists{../experiments/thesis_physical_benchmark/latex/gaussian_calibration.tex}{%
+    \input{../experiments/thesis_physical_benchmark/latex/gaussian_calibration.tex}%
+}{%
+    \begin{quote}
+    \emph{Tabla pendiente.} NLL, CRPS, escala predictiva y coberturas de 90\% y 95\% se incorporarán desde \nolinkurl{gaussian_calibration.tex} una vez completadas las variantes gaussianas.
+    \end{quote}
+}
+
+Los resultados físicos, cuando estén presentes, describen los procesos sintéticos incluidos y su partición de estrés predefinida. No validan desempeño en datos reales, no convierten los scores legados a tiempo físico y no autorizan comparar numéricamente ambas tablas.
+
 \section{Síntesis del capítulo}
 \label{sec:sintesis-resultados-final}
 
-Los resultados finales permiten resumir la evaluación en cinco puntos:
+La evidencia disponible y el estado del protocolo permiten resumir el capítulo en seis puntos:
 
 \begin{enumerate}
-	\item El mejor modelo observado es \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}: encoder--decoder pequeño, entrenado con ocho objetivos y ajustado autoregresivamente sobre objetivos contiguos.
-	\item Este modelo gana en los 5 datasets y obtiene MSE 0.1979, RMSE 0.4417 y MAE 0.2193.
+	\item En el benchmark legado real, el mejor modelo observado es \textttbreak{EncDec-Opt-Small-MT8\_FT\_AR\_Contiguous}: encoder--decoder pequeño, entrenado con ocho objetivos y ajustado autoregresivamente sobre objetivos contiguos.
+	\item Ese modelo gana descriptivamente en los 5 datasets y obtiene MSE 0.1979, RMSE 0.4417 y MAE 0.2193; con sólo cinco unidades no se declara significancia estadística.
 	\item Dentro de los encoders puros, las variantes pequeñas de \CTTransformer\ son las más competitivas; la mejor por MSE es la versión pequeña con Time2Vec y sesgo temporal, aunque queda prácticamente empatada con \CTTransformerSmall.
-	\item Las ablaciones indican que el identificador de token objetivo aporta una señal útil; el efecto aislado del encoding temporal continuo no queda demostrado en este subconjunto.
-	\item Aumentar capacidad no mejora el MSE en esta evaluación. Los modelos pequeños entregan la mejor relación entre error, parámetros y tiempo.
+	\item Las ablaciones legadas indican que el identificador de token objetivo aporta una señal útil; el efecto aislado del encoding temporal continuo no queda identificado porque horizonte, orden y densidad no estaban completamente separados.
+	\item Aumentar capacidad no mejora el MSE en la evaluación legada. Los modelos pequeños entregan allí la mejor relación entre error, parámetros y tiempo.
+	\item El ranking físico de \QueryCross, \ContinuousBasis, \CTSSM\ y las cabezas gaussianas sólo es válido si aparecen los cuatro reportes condicionales anteriores, generados desde la campaña completa; un smoke test no completa esta conclusión.
 \end{enumerate}

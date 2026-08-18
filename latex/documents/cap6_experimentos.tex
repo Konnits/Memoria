@@ -1,7 +1,7 @@
 \chapter{Experimentos}
 \label{cap:experimentos}
 
-Este capítulo fija la metodología experimental utilizada para evaluar \CTTransformer\ y sus variantes. La fase experimental de esta memoria se da por cerrada con cinco datasets reales y tres semillas por combinación dataset--modelo. Por lo tanto, el Capítulo~\ref{cap:resultados} reporta conclusiones finales para esta evaluación, aunque el alcance estadístico sigue estando limitado por el número de datasets.
+Este capítulo distingue dos protocolos con preguntas y unidades experimentales diferentes. El \emph{benchmark legado} sobre cinco series reales, ya ejecutado, usa historias y horizontes medidos en eventos. El \emph{benchmark físico sintético} usa duraciones continuas, targets extraídos de la trayectoria latente limpia con independencia del patrón de observación y del ruido, y controles de identificabilidad; su ranking neuronal sólo se incorpora cuando termina la ejecución completa. Los scores de ambos protocolos no son directamente comparables.
 
 \section{Objetivos experimentales}
 \label{sec:objetivos-experimentales}
@@ -19,10 +19,10 @@ Los experimentos persiguen los siguientes objetivos:
 	\item \textbf{Delimitar el alcance de las conclusiones}: separar las señales consistentes del benchmark cerrado de las afirmaciones que requerirían más datasets, más semillas o evaluación multivariada.
 \end{enumerate}
 
-\section{Escenario experimental}
+\section{Benchmark legado sobre series reales}
 \label{sec:escenario-real}
 
-La evaluación final se realiza sobre los archivos \textttbreak{real\_data\_i.csv}, con $i=1,\dots,5$. Cada dataset se ordena temporalmente y se divide respetando el tiempo en entrenamiento, validación y prueba, con proporciones 70\%, 15\% y 15\%, respectivamente. Para cada modelo se ejecutan tres semillas: 42, 84 y 126.
+La evaluación legada se realiza sobre los archivos \textttbreak{real\_data\_i.csv}, con $i=1,\dots,5$. Cada dataset se ordena temporalmente y se divide respetando el tiempo en entrenamiento, validación y prueba, con proporciones 70\%, 15\% y 15\%, respectivamente. Para cada modelo se ejecutan tres semillas: 42, 84 y 126.
 
 \hfill
 
@@ -44,7 +44,7 @@ En la configuración activa de datos reales, cada serie contiene:
 
 El escalado se ajusta sólo con el segmento de entrenamiento y luego se aplica a validación y prueba, evitando fuga de información desde el futuro. Las ventanas supervisadas usan una historia máxima de 500 observaciones y una historia mínima de 20 observaciones. Para los modelos no autoregresivos se seleccionan hasta cuatro timestamps objetivo dentro de offsets entre 1 y 30 pasos futuros. La escala temporal del modelo se estima por dataset a partir de la mediana de los deltas temporales positivos del bloque de entrenamiento, con límites conservadores para evitar escalas patológicas.
 
-\section{Modelos comparados}
+\section{Modelos comparados en el protocolo legado}
 \label{sec:modelos-comparados}
 
 Los modelos evaluados se agrupan en cinco familias.
@@ -98,7 +98,7 @@ STraTS y CoFormer se incluyen porque son dos referencias representativas para se
 	\item \textbf{Sin identificador de token objetivo}: elimina la señal aprendible que distingue historia y objetivo. Mide el aporte de explicitar el rol del token.
 \end{itemize}
 
-\section{Configuración de entrenamiento}
+\section{Configuración de entrenamiento legada}
 \label{sec:configuracion-entrenamiento}
 
 Las configuraciones paramétricas principales son:
@@ -109,7 +109,7 @@ Las configuraciones paramétricas principales son:
 
 El entrenamiento usa AdamW, calentamiento lineal seguido de decaimiento coseno, selección del mejor checkpoint según RMSE de validación, precisión mixta automática y recorte de gradientes. La configuración se ajusta según el tamaño del modelo. En las variantes más inestables de \CTTransformer\ y del encoder--decoder optimizado se usa pérdida Huber, menor tasa de aprendizaje, más calentamiento y recorte de gradiente más estricto. El scheduler se detalla en el Anexo~\ref{anexo:optimizacion-scheduler}.
 
-\section{Métricas de evaluación}
+\section{Métricas de evaluación legadas}
 \label{sec:metricas-evaluacion-experimentos}
 
 La evaluación se realiza mediante:
@@ -122,7 +122,7 @@ La evaluación se realiza mediante:
 
 El análisis principal prioriza MSE, RMSE y MAE.
 
-\section{Agregación y análisis estadístico}
+\section{Agregación y análisis estadístico del benchmark legado}
 \label{sec:analisis-estadistico-experimentos}
 
 Para cada modelo, las tres semillas se promedian primero dentro de cada dataset. Luego se reporta la media y desviación estándar sobre los cinco promedios por dataset. Esta decisión evita tratar semillas como si fueran datasets independientes y permite que cada serie tenga el mismo peso en las tablas finales.
@@ -146,7 +146,63 @@ python scripts/benchmark_final.py
 
 El orquestador admite seleccionar rangos de datasets, semillas, subconjuntos de modelos y variantes opcionales como encoder--decoder y ajuste autoregresivo. Para reproducir el análisis final de esta memoria se debe filtrar el archivo de resultados a los datasets 1--5, semillas 42, 84 y 126, y modelos con las 15 corridas completas.
 
+\section{Evaluación física sintética congelada}
+\label{sec:benchmark-fisico}
+
+La segunda evaluación está especificada en \nolinkurl{configs/benchmark/thesis_physical_final.yaml} y se ejecuta exclusivamente mediante \nolinkurl{scripts/run_thesis_physical_benchmark.py}. Su estado versionado exacto es \nolinkurl{thesis_physical_evaluation_v1_frozen}. El archivo YAML fija a priori datos, semillas, modelos, presupuesto, selección de checkpoints, métricas y rutas de salida. El runner no ejecuta tuning automático ni modifica hiperparámetros a partir del conjunto de test. Su interpretación es retrospectiva: los procesos sintéticos ya generados y sus diagnósticos fueron inspeccionados durante el desarrollo, por lo que no se presenta como una prueba prospectiva ciega.
+
+\subsection{Unidades experimentales y partición principal--estrés}
+
+La partición principal contiene exactamente 16 unidades: los identificadores canónicos \textttbreak{*\_0000} de ocho presets sintéticos, cada uno en modalidad univariada y multivariada. Se excluyen del estimando principal las dos unidades \textttbreak{long\_gaps\_gseed3031\_0000}, una por modalidad, que forman una partición de estrés separada. Esta separación evita incorporar a posteriori un caso extremo al promedio principal y permite reportarlo como prueba de sensibilidad.
+
+Cada unidad provee \nolinkurl{observations.parquet}, con eventos irregulares y ruido, y \nolinkurl{truth.parquet}, con la trayectoria limpia. Los splits temporales se respetan de extremo a extremo. El escalado se ajusta sólo en entrenamiento y los targets se obtienen por interpolación lineal de \nolinkurl{truth.parquet}; test no participa en tuning, parada temprana ni selección del checkpoint.
+
+\subsection{Tarea en tiempo físico}
+
+Todas las historias cubren una duración física de 8.0 unidades. Para limitar memoria se conservan como máximo 256 eventos en univariado y 512 en multivariado mediante submuestreo representativo en tiempo. Los orígenes de forecast se toman de una grilla física de la trayectoria limpia, no de la llegada de un evento. Una historia sin observaciones se descarta y cada descarte se asigna a una causa mutuamente excluyente.
+
+Durante entrenamiento cada ejemplo usa cuatro horizontes muestreados con una distribución log-uniforme en $[0.25,8.0]$. La evaluación usa $\{0.25,1.0,3.0,8.0\}$ y permuta reproduciblemente el orden de las consultas. Los timestamps absolutos permanecen en \textttbreak{float64} durante carga, selección y resta del origen; las capas reciben sólo tiempos relativos ya recentrados. Una auditoría explícita compara esta ruta con el cast absoluto prematuro a \textttbreak{float32}.
+
+\subsection{Modelos, ablaciones y selección}
+
+Se ejecutan las semillas 42, 84 y 126 para los siguientes sistemas:
+\begin{itemize}
+    \item \textttbreak{QueryCross} y \textttbreak{BasisDecoder} como arquitecturas puntuales principales;
+    \item \textttbreak{CTSSM} y \textttbreak{BasisDecoder-CTSSM}, que añaden la transición continua estable;
+    \item \textttbreak{NoTime} y \textttbreak{QueryOnly} como ablaciones temporales de \QueryCross;
+    \item \textttbreak{QueryCross-Gaussian} y \textttbreak{BasisDecoder-Gaussian} como extensiones probabilísticas;
+    \item \textttbreak{Persistence} como baseline sin parámetros.
+\end{itemize}
+Las variantes puntuales minimizan su pérdida de regresión y seleccionan checkpoint por \textttbreak{val\_rmse}. Las gaussianas minimizan NLL heteroscedástica y seleccionan por \textttbreak{val\_nll}. La receta física usa AdamW y \textttbreak{CosineAnnealingLR} sin warmup, a diferencia del warmup más coseno del benchmark legado. Las comparaciones de ablación reutilizan inicializaciones emparejadas cuando el grafo común lo permite. Los hiperparámetros permanecen fijados en el YAML antes de evaluar test. La campaña usa batch 32, \textttbreak{num\_workers=0} y CUDA obligatoria; el preflight verifica disponibilidad de la GPU RTX 5090 y memoria antes de habilitar la corrida completa.
+
+\subsection{Identificabilidad y métricas}
+
+Antes del ranking neuronal se audita que el slot de query no determine el horizonte y se comparan controles de persistencia, representación ordinal y horizonte explícito. Las corruptelas emparejadas incluyen timestamps reales, igualados, gaps permutados, grilla regular, orden ordinal, \textttbreak{query\_only} y \textttbreak{history\_only}. Estos diagnósticos distinguen sensibilidad temporal de una simple asociación con orden o densidad; no demuestran por sí solos causalidad sobre datos reales.
+
+Para predicción puntual se reportan RMSE, MAE y sesgo en espacio estandarizado y original. Para cabezas gaussianas se añaden NLL, CRPS, escala predictiva y cobertura de intervalos de 90\% y 95\%. Las métricas se estratifican por horizonte, densidad, hueco máximo y edad de la última observación; en multivariado los cuantiles se calculan dentro de cada canal para no confundir identidad del sensor con irregularidad.
+
+La agregación respeta la jerarquía experimental. Primero se promedian las semillas dentro de cada unidad dataset; luego se emparejan las modalidades univariada y multivariada dentro de cada preset; finalmente se calcula el macro-promedio entre los ocho presets. Las semillas miden variabilidad de optimización y no aumentan el número de réplicas científicas. El stress set se informa aparte y nunca entra al ranking principal.
+
+\subsection{Ejecución y estado de los resultados}
+
+El runner ofrece los modos \textttbreak{preflight}, \textttbreak{dry-run}, \textttbreak{smoke}, \textttbreak{run} y \textttbreak{report}. El modo \textttbreak{smoke} usa un presupuesto reducido para validar lectura de datos, forward, backward, checkpoints y reportes; sus métricas no constituyen un ranking. Sólo \textttbreak{run} completo, seguido de \textttbreak{report}, puede poblar las tablas finales del Capítulo~\ref{cap:resultados}. La salida se guarda bajo \nolinkurl{experiments/thesis_physical_benchmark/}, separando resultados principales y de estrés. Para reducir costo de entrada/salida se cachea de forma perezosa únicamente la historia determinista submuestreada; los targets nunca se cachean y las queries de entrenamiento continúan cambiando por época.
+
+La ejecución reproducible se inicia con:
+\begin{verbatim}
+conda.exe run -n memoria python \
+  scripts/run_thesis_physical_benchmark.py preflight \
+  --config configs/benchmark/thesis_physical_final.yaml
+
+conda.exe run -n memoria python \
+  scripts/run_thesis_physical_benchmark.py run \
+  --config configs/benchmark/thesis_physical_final.yaml
+
+conda.exe run -n memoria python \
+  scripts/run_thesis_physical_benchmark.py report \
+  --config configs/benchmark/thesis_physical_final.yaml
+\end{verbatim}
+
 \section{Resumen metodológico}
 \label{sec:resumen-metodologico}
 
-En síntesis, el diseño experimental compara la familia \CTTransformer, variantes encoder--decoder, baselines simples y adaptaciones de STraTS y CoFormer bajo un protocolo temporalmente justo: entrenamiento en pasado, validación intermedia y prueba futura. La fase experimental cerrada contiene cinco datasets, tres semillas por dataset y 24 modelos completos. El Capítulo~\ref{cap:resultados} utiliza ese subconjunto balanceado para declarar el mejor modelo observado y extraer conclusiones con el nivel de cautela que corresponde a una evaluación de cinco series reales.
+En síntesis, el benchmark legado compara \CTTransformer, variantes encoder--decoder, baselines simples y adaptaciones de STraTS y CoFormer sobre cinco series reales; sus resultados son descriptivos a nivel de dataset. La evaluación física congelada compara \QueryCross, \ContinuousBasis, \CTSSM, ablaciones y cabezas gaussianas sobre 16 unidades sintéticas principales y dos de estrés, con tiempo identificable y agregación jerárquica. El capítulo siguiente conserva ambos cuerpos de evidencia separados y no completa las tablas físicas con resultados de smoke tests.

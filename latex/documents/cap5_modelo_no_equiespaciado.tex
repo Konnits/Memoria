@@ -69,6 +69,8 @@ Esta organización se materializa en la etapa de construcción de ejemplos super
 
 El preprocesamiento descrito en el Capítulo~\ref{cap:series-tiempo} (normalización ajustada sólo con el bloque de entrenamiento, particiones temporales, etc.) se aplica antes de construir dichos ejemplos.
 
+La precisión temporal forma parte del contrato del modelo. Los timestamps absolutos se cargan, ordenan y seleccionan en \textttbreak{float64}. Dentro de cada ventana se resta un origen local también en \textttbreak{float64}; sólo entonces los deltas resultantes se convierten a \textttbreak{float32} para las capas neuronales. Convertir primero un timestamp absoluto grande, por ejemplo tiempo UNIX, puede redondear dos eventos cercanos al mismo número y destruir exactamente el gap que se desea modelar. Los timestamps absolutos se conservan además como metadatos de auditoría y no se entregan directamente a capas en precisión simple.
+
 \subsection{Ventanas de historia y targets}
 \label{sec:timeseriesdataset-detalle}
 
@@ -79,6 +81,8 @@ Cada ejemplo supervisado se construye a partir de cuatro elementos clave:
     \item \textbf{Offsets de predicción}: distancias en índices entre un \emph{anchor} interno $a$ y los índices objetivo.
     \item \textbf{Número de objetivos por ejemplo}: cantidad de timestamps futuros distintos que se predicen simultáneamente.
 \end{enumerate}
+
+Esta lista describe el modo legado por cantidad de eventos. En el protocolo físico, $h_{\min}$, $h_{\max}$ y los offsets se reemplazan por una duración histórica, un máximo de eventos usado sólo como límite computacional y horizontes expresados en unidades del timestamp. La fuente de targets puede ser distinta de la fuente de observaciones.
 
 Para cada ejemplo se elige un índice \emph{anchor} $a$ tal que exista suficiente historia hacia atrás y suficiente espacio hacia adelante para el target. En la construcción implementada, $a$ se interpreta como la frontera derecha de la historia: la historia termina en el índice $a-1$ y los objetivos se ubican en índices $a+o_m$. Por tanto, usando índices internos base cero:
 \[
@@ -522,6 +526,70 @@ y la cabeza de regresión se aplica a cada estado objetivo final:
 
 En modo no autoregresivo, todos los timestamps objetivo pueden entregarse simultáneamente al decoder. En modo autoregresivo, la memoria del encoder se calcula una vez con la historia observada, y el decoder genera los objetivos secuencialmente: la predicción anterior se usa como entrada de valor del siguiente token objetivo. Esta diferencia es importante: las predicciones previas no se agregan de vuelta a la historia del encoder, sino que se incorporan en el lado del decoder. De este modo, la variante encoder--decoder evalúa si separar memoria histórica y consultas futuras aporta ventajas frente a la arquitectura base de encoder con tokens objetivo.
 
+\section{Arquitecturas explícitas para tiempo físico}
+\label{sec:arquitecturas-tiempo-fisico}
+
+La ablación del encoder legado mostró una limitación experimental y otra arquitectónica. Primero, un offset medido en eventos puede revelar el horizonte mediante el orden del target aunque se elimine su timestamp. Segundo, concatenar placeholders objetivo al encoder permite que las consultas interactúen entre sí y mezcla el costo de representar historia con el de formular predicciones. Para aislar el uso del tiempo físico se implementan \QueryCross\ y \ContinuousBasis. Ninguna asigna embeddings de slot a los targets y ambas son equivariantes a permutar las consultas: al reordenar sus timestamps sólo se reordenan las salidas.
+
+\subsection{\QueryCross: consultas independientes con lag relativo}
+\label{sec:query-cross}
+
+\QueryCross\ separa la entrada en historia y consultas antes de codificar. Para cada evento histórico se construye
+\begin{equation}
+    h_i^{(0)}=E_x(x_i)+E_t(t_i-t_{\mathrm{ref}})+E_s(s_i)+E_f(f_i),
+\end{equation}
+donde $E_s$ se usa en series multivariadas asincrónicas y $E_f$ resume información externa disponible, como la masa de observaciones representada por un token submuestreado. Un encoder Transformer procesa sólo $\{h_i^{(0)}\}$ y produce la memoria $M$. Por tanto, los placeholders de valor futuro se ignoran y no pueden contaminar la historia.
+
+Cada objetivo $(t_m^\star,s_m)$ parte de un vector de consulta compartido y agrega el encoding del horizonte $t_m^\star-t_{\mathrm{last}}$, la identidad del sensor y una modulación FiLM derivada de gap global, edad de la última observación del sensor y una aproximación de densidad local. La atención cruzada de la cabeza $r$ usa
+\begin{equation}
+    a_{m i}^{(r)}=
+    \frac{q_m^{(r)\top}k_i^{(r)}}{\sqrt{d_h}}
+    +b_r\!\left(\frac{t_m^\star-t_i}{\tau}\right)
+    +\gamma_r\,\mathbb{I}[s_m=s_i],
+\end{equation}
+con máscara para impedir atender a observaciones posteriores a la consulta. El kernel $b_r$ combina un decaimiento monótono estable con componentes Fourier y RBF multiescala. Así, cada cabeza puede conservar una preferencia interpretable por recencia y aprender periodicidades o dependencias no monótonas. Las consultas no usan auto-atención entre sí; cada bloque contiene atención cruzada y una red feed-forward residual.
+
+La salida puntual se expresa como un residual sobre el último valor observado, global en el caso denso y por sensor en el caso asincrónico. Este sesgo inductivo separa la predicción de persistencia de la corrección aprendida. Las ablaciones se definen por grafo efectivo: \textttbreak{NoTime} desactiva horizonte, encoding temporal de historia, kernel de lag, FiLM temporal y \CTSSM; \textttbreak{QueryOnly} conserva el horizonte de la query pero elimina la descripción de gaps internos; \textttbreak{CTSSM} añade la transición continua descrita más adelante.
+
+\subsection{\ContinuousBasis: decoder como función del horizonte}
+\label{sec:continuous-basis}
+
+\ContinuousBasis\ codifica la historia una sola vez y predice coeficientes de una base temporal. Sea $u=(t^\star-t_{\mathrm{last}})/\tau$ y $z=\operatorname{sign}(u)\log(1+|u|)$. La base concatenada es
+\begin{equation}
+    \phi(u)=\left[1,z,\ldots,z^p,
+    \left\{\exp\!\left(-\frac{(u-c_j)^2}{2w_j^2}\right)\right\}_{j=1}^{J},
+    \left\{\sin(2\pi u/P_k),\cos(2\pi u/P_k)-1\right\}_{k=1}^{K}\right].
+\end{equation}
+Los centros, anchos y períodos cubren escalas logarítmicas. A partir del estado histórico global, o de un contexto específico por sensor, el modelo produce coeficientes $\beta$ y evalúa
+\begin{equation}
+    \widehat y(t^\star)=y_{\mathrm{last}}+\beta^\top\phi(u).
+\end{equation}
+Evaluar $M$ horizontes cuesta $\mathcal{O}(M\,\dim\phi)$ después de codificar la historia, sin interacción ni posición ordinal entre targets. Esta formulación hace explícita la continuidad del pronóstico, pero restringe su forma a la familia de bases elegida; por ello se compara empíricamente con \QueryCross.
+
+\subsection{Transición de estado continuo \CTSSM}
+\label{sec:ctssm}
+
+Ambas arquitecturas admiten un estado continuo diagonal antes del encoder. Para el gap $\Delta t_i\geq0$ se calcula
+\begin{align}
+    \widetilde z_i &= \exp\!\left[-\operatorname{softplus}(r)\Delta t_i/\tau\right]\odot z_{i-1},\\
+    g_i &= \sigma(W_g h_i+b_g),\\
+    z_i &= (1-g_i)\odot\widetilde z_i+g_i\odot\tanh(W_c h_i+b_c).
+\end{align}
+Las tasas positivas garantizan decaimiento estable. La recurrencia es una composición de transformaciones diagonales afines y se evalúa mediante un scan paralelo asociativo, sin solver de ecuaciones diferenciales ni bucle Python por evento. \CTSSM\ es, por tanto, un bloque de estado continuo liviano y no una afirmación de equivalencia con un modelo de espacio de estados continuo general.
+
+\subsection{Cabezas gaussianas heteroscedásticas}
+\label{sec:cabezas-gaussianas}
+
+Las variantes gaussianas predicen $\mu_\theta$ y $\ell_\theta=\log\sigma_\theta$, restringiendo numéricamente $\ell_\theta$ a un intervalo finito. Se entrenan minimizando, sobre targets válidos, la log-verosimilitud negativa
+\begin{equation}
+    \mathcal{L}_{\mathrm{NLL}}=
+    \frac{1}{N}\sum_n\left[
+    \ell_n+\frac{(y_n-\mu_n)^2}{2\exp(2\ell_n)}
+    +\frac{1}{2}\log(2\pi)
+    \right],
+\end{equation}
+incluyendo la constante de normalización, tal como se calcula en la implementación y en las métricas reportadas. El checkpoint se selecciona por NLL de validación; las cabezas puntuales se seleccionan por RMSE de validación. En test se reportan NLL, CRPS gaussiano, escala predictiva media y coberturas de 90\% y 95\%. Una cobertura nominal correcta es necesaria, pero no suficiente, para afirmar calibración.
+
 \section{Manejo de historias variables y offsets de predicción}
 \label{sec:historias-y-offsets}
 
@@ -581,7 +649,7 @@ Estas métricas se almacenan por época, lo que permite analizar la evolución d
 El entrenamiento se gestiona mediante un bucle homogéneo para todos los modelos, que se apoya en:
 \begin{itemize}
     \item un optimizador configurable, con opciones como Adam, AdamW o SGD,
-    \item un \emph{scheduler} de \emph{learning rate}, en el benchmark final se utiliza calentamiento lineal seguido de decaimiento coseno.
+    \item un \emph{scheduler} de \emph{learning rate}: el benchmark legado utiliza calentamiento lineal seguido de decaimiento coseno, mientras la evaluación física congelada usa decaimiento coseno sin warmup.
 \end{itemize}
 
 En la mayoría de los experimentos se emplea AdamW con regularización de pesos, coherente con la práctica común en modelos Transformer. Adicionalmente, se aplica recorte de gradientes para evitar explosión de gradientes.
