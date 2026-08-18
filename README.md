@@ -149,6 +149,20 @@ Estas variantes no forman parte del benchmark congelado y se escriben por defect
 python scripts/benchmark_synthetic.py --models Custom Custom-Gaussian Custom-LearnableScale Custom-RoPE Custom-TimeWindow --temporal-window 8
 ```
 
+### Decisiones arquitectónicas deliberadas
+
+Los siguientes comportamientos se conservan intencionalmente y tienen pruebas
+de regresión; no constituyen bugs pendientes:
+
+- El contenido de los tokens de left-padding puede tener embeddings arbitrarios:
+  `key_padding_mask` impide que actúen como claves y no altera las salidas válidas.
+- `TemporalAttentionBias` recibe tiempo relativo lineal, aunque el encoding use
+  `log1p`, porque modela intervalos estacionarios entre pares de timestamps.
+- La ruta SDPA causal combina la máscara triangular con el bias temporal.
+- `FeatureEmbedding` aplica `LayerNorm` después de proyectar a `d_model`; no se
+  normaliza `d_in` antes de la proyección, ya que en modo evento `d_in=1` y se
+  eliminaría toda la señal de valor.
+
 ### State-of-the-Art Wrappers
 
 | Modelo | Paper | Arquitectura |
@@ -426,6 +440,7 @@ Helper para construir un Predictor desde una carpeta de experimento generada por
 | `test_structured_metrics.py` | Métricas por horizonte/canal |
 | `test_synthetic_analysis.py` | Análisis estadístico |
 | `test_experimental_architectures.py` | Ablaciones experimentales de arquitectura |
+| `test_architecture_guardrails.py` | Decisiones deliberadas de masking, bias y normalización |
 | `test_time_encoding_ablations.py` | Ablaciones de encoding temporal |
 
 ```powershell
