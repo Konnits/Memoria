@@ -65,7 +65,9 @@ class DILATELoss(nn.Module):
         loss = alpha * shape_loss + (1 - alpha) * temporal_loss
 
     Inputs are expected as [B, T, D]. If [B, D] is provided, it is treated as a
-    single-step sequence.
+    single-step sequence. ``target_mask`` is optional and uses the same shape:
+    missing dimensions are excluded from pairwise distances, while time steps
+    with no observed target dimensions are removed from the alignment.
     """
 
     def __init__(
@@ -88,10 +90,20 @@ class DILATELoss(nn.Module):
         self.eps = float(eps)
         self._omega_cache: dict[tuple[int, int, str, torch.dtype], torch.Tensor] = {}
 
-    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        return self.forward_parts(preds, targets).total
+    def forward(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        return self.forward_parts(preds, targets, target_mask=target_mask).total
 
-    def forward_parts(self, preds: torch.Tensor, targets: torch.Tensor) -> DILATEParts:
+    def forward_parts(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor | None = None,
+    ) -> DILATEParts:
         if preds.ndim == 2:
             preds = preds.unsqueeze(1)
         if targets.ndim == 2:
@@ -102,15 +114,92 @@ class DILATELoss(nn.Module):
                 f"preds={tuple(preds.shape)}, targets={tuple(targets.shape)}"
             )
 
+        if target_mask is None:
+            return self._forward_complete_sequence(preds, targets)
+
+        if target_mask.ndim == 2:
+            target_mask = target_mask.unsqueeze(1)
+        if target_mask.shape != targets.shape:
+            raise ValueError(
+                "target_mask must have the same shape as targets. "
+                f"target_mask={tuple(target_mask.shape)}, targets={tuple(targets.shape)}"
+            )
+
+        observed_mask = target_mask.to(device=targets.device) > 0
+        if torch.all(observed_mask):
+            return self._forward_complete_sequence(preds, targets)
+
+        # Un horizonte sin ninguna variable observada no debe participar ni
+        # como predicción ni como target en el alineamiento. Como cada muestra
+        # puede conservar una longitud distinta, procesamos esas subsecuencias
+        # por separado y promediamos sólo las que contienen supervisión.
+        sample_parts: list[DILATEParts] = []
+        for batch_idx in range(preds.shape[0]):
+            valid_steps = observed_mask[batch_idx].any(dim=-1)
+            if not torch.any(valid_steps):
+                continue
+
+            sample_parts.append(
+                self._forward_complete_sequence(
+                    preds[batch_idx : batch_idx + 1, valid_steps, :],
+                    targets[batch_idx : batch_idx + 1, valid_steps, :],
+                    observed_mask=observed_mask[
+                        batch_idx : batch_idx + 1, valid_steps, :
+                    ],
+                )
+            )
+
+        if not sample_parts:
+            # Cero diferenciable: un batch sin supervisión no debe actualizar
+            # el modelo ni fallar durante backward().
+            zero = preds.sum() * 0.0
+            return DILATEParts(total=zero, shape=zero, temporal=zero)
+
+        return DILATEParts(
+            total=torch.stack([parts.total for parts in sample_parts]).mean(),
+            shape=torch.stack([parts.shape for parts in sample_parts]).mean(),
+            temporal=torch.stack([parts.temporal for parts in sample_parts]).mean(),
+        )
+
+    def _forward_complete_sequence(
+        self,
+        preds: torch.Tensor,
+        targets: torch.Tensor,
+        observed_mask: torch.Tensor | None = None,
+    ) -> DILATEParts:
         # The temporal term is a gradient of soft-DTW wrt the distance matrix.
         # It needs autograd even during validation, but only needs higher-order
         # gradients when the model prediction itself requires gradients.
         needs_model_grad = bool(preds.requires_grad)
         with torch.enable_grad():
-            if needs_model_grad:
-                distance = torch.cdist(preds, targets, p=2).pow(2)
+            preds_for_distance = preds if needs_model_grad else preds.detach()
+            targets_for_distance = targets if needs_model_grad else targets.detach()
+
+            if observed_mask is None:
+                distance = torch.cdist(
+                    preds_for_distance,
+                    targets_for_distance,
+                    p=2,
+                ).pow(2)
             else:
-                distance = torch.cdist(preds.detach(), targets.detach(), p=2).pow(2)
+                mask = observed_mask.to(
+                    device=targets.device,
+                    dtype=preds_for_distance.dtype,
+                )
+                safe_targets = torch.where(
+                    observed_mask,
+                    targets_for_distance,
+                    torch.zeros_like(targets_for_distance),
+                )
+                pairwise_error = (
+                    preds_for_distance.unsqueeze(2)
+                    - safe_targets.unsqueeze(1)
+                ).pow(2)
+                # La máscara pertenece a cada target j y se comparte sobre
+                # todos los posibles pasos de predicción i del alineamiento.
+                distance = (pairwise_error * mask.unsqueeze(1)).sum(dim=-1)
+
+            if not needs_model_grad:
                 distance.requires_grad_(True)
 
             shape_values = _soft_dtw(distance, gamma=self.gamma)

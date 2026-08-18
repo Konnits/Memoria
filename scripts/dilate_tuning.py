@@ -150,7 +150,11 @@ def evaluate_teacher_forced(
         batch = _batch_to_device(batch, device)
         with torch.no_grad():
             preds = forward_teacher_forced(model, batch)
-        parts = loss_fn.forward_parts(preds, batch["target_values"])
+        parts = loss_fn.forward_parts(
+            preds,
+            batch["target_values"],
+            target_mask=batch.get("target_loss_mask"),
+        )
         bsz = int(batch["target_values"].shape[0])
         total = total + parts.total.detach().to(torch.float64) * bsz
         shape = shape + parts.shape.detach().to(torch.float64) * bsz
@@ -188,7 +192,11 @@ def evaluate_autoregressive(
         with torch.no_grad():
             preds = generate_autoregressive(model, batch)
         targets = batch["target_values"]
-        parts = loss_fn.forward_parts(preds, targets)
+        parts = loss_fn.forward_parts(
+            preds,
+            targets,
+            target_mask=batch.get("target_loss_mask"),
+        )
         bsz = int(targets.shape[0])
         total = total + parts.total.detach().to(torch.float64) * bsz
         shape = shape + parts.shape.detach().to(torch.float64) * bsz
@@ -295,7 +303,11 @@ def train_one_run(
         batch = next(iter(data["train_loader"]))
         batch = _batch_to_device(batch, device)
         preds = forward_teacher_forced(model, batch)
-        parts = loss_fn.forward_parts(preds, batch["target_values"])
+        parts = loss_fn.forward_parts(
+            preds,
+            batch["target_values"],
+            target_mask=batch.get("target_loss_mask"),
+        )
         parts.total.backward()
         return {
             "Dataset_ID": dataset_id,
@@ -342,7 +354,11 @@ def train_one_run(
             batch = _batch_to_device(batch, device)
             optimizer.zero_grad(set_to_none=True)
             preds = forward_teacher_forced(model, batch)
-            parts = loss_fn.forward_parts(preds, batch["target_values"])
+            parts = loss_fn.forward_parts(
+                preds,
+                batch["target_values"],
+                target_mask=batch.get("target_loss_mask"),
+            )
             parts.total.backward()
             if args.grad_clip and args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(args.grad_clip))

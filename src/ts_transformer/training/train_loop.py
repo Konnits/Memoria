@@ -12,6 +12,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .dilate_loss import DILATELoss
 from .losses import get_loss_fn
 from .metrics import compute_regression_metrics, compute_structured_regression_metrics
 from .optimizers import OptimizerConfig, build_optimizer, build_scheduler
@@ -618,6 +619,9 @@ class Trainer:
         """
         if target_loss_mask is None:
             return self.loss_fn(preds, targets)
+
+        if isinstance(self.loss_fn, DILATELoss):
+            return self.loss_fn(preds, targets, target_mask=target_loss_mask)
 
         mask = target_loss_mask.float()
         mask_sum = mask.sum().clamp(min=1.0)
