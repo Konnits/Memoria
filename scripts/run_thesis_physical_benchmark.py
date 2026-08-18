@@ -1054,6 +1054,11 @@ def audit_identifiability_completion(
     if not metadata_path.is_file():
         raise ProtocolError(f"Falta auditoría de identificabilidad: {metadata_path}")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    _verify_identifiability_metadata_contract(
+        config=config,
+        metadata=metadata,
+        preflight=preflight,
+    )
     expected = {unit.key for unit in cohort_units(config, cohort)}
     observed = {
         (str(item["kind"]), str(item["preset"]), str(item["dataset_id"]))
@@ -1135,6 +1140,79 @@ def audit_identifiability_completion(
         ):
             raise ProtocolError(f"Artefacto temporal inválido: {path}")
     return {"cohort": cohort, "complete": True, "metadata": file_provenance(metadata_path)}
+
+
+def _verify_identifiability_metadata_contract(
+    *,
+    config: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    preflight: Mapping[str, Any],
+) -> None:
+    """Impide aceptar como final un diagnóstico reducido mediante flags CLI."""
+    temporal_path = _repository_path(config["identifiability"]["config"])
+    with temporal_path.open("r", encoding="utf-8") as handle:
+        temporal_config = yaml.safe_load(handle)
+    if not isinstance(temporal_config, Mapping):
+        raise ProtocolError("Configuración de identificabilidad inválida.")
+
+    task = temporal_config.get("task", {})
+    controls = temporal_config.get("controls", {})
+    diagnostics = temporal_config.get("diagnostics", {})
+    expected_contract = {
+        "seed": int(temporal_config["seed"]),
+        "n_train_anchors_per_dataset": int(task["train_anchors"]),
+        "n_eval_anchors_per_dataset": int(task["eval_anchors"]),
+        "queries_per_anchor": int(task["queries_per_anchor"]),
+        "query_slots_randomized": bool(task["randomize_query_slots"]),
+        "physical_horizon_range": [float(value) for value in task["horizon_range"]],
+        "observation_scan_skipped": False,
+        "controls": list(controls["models"]),
+        "control_history_values": str(controls["history_values"]),
+        "timestamp_ablations": list(diagnostics["timestamp_ablations"]),
+    }
+    for key, expected in expected_contract.items():
+        observed = metadata.get(key)
+        if observed != expected:
+            raise ProtocolError(
+                f"Identificabilidad efectiva {key}={observed!r}; "
+                f"el protocolo congelado exige {expected!r}."
+            )
+
+    recorded_runtime = metadata.get("runtime", {})
+    recorded_repository = recorded_runtime.get("repository", {})
+    preflight_runtime = preflight.get("runtime", {})
+    expected_head = preflight_runtime.get("repository", {}).get("git_head")
+    if (
+        recorded_repository.get("git_commit") != expected_head
+        or recorded_repository.get("worktree_dirty") is not False
+    ):
+        raise ProtocolError(
+            "La identificabilidad no procede del HEAD limpio aprobado por preflight."
+        )
+
+    recorded_environment = recorded_runtime.get("environment", {})
+    expected_versions = preflight_runtime.get("versions", {})
+    version_keys = (
+        "python_implementation",
+        "python",
+        "numpy",
+        "pandas",
+        "pyarrow",
+        "pyyaml",
+    )
+    if any(
+        recorded_environment.get(key) != expected_versions.get(key)
+        for key in version_keys
+    ):
+        raise ProtocolError(
+            "La identificabilidad fue generada con otras versiones numéricas."
+        )
+    if Path(str(recorded_environment.get("python_executable", ""))).resolve() != Path(
+        str(preflight_runtime.get("python_executable", ""))
+    ).resolve():
+        raise ProtocolError(
+            "La identificabilidad fue generada con otro ejecutable de Python."
+        )
 
 
 def aggregate_seed_to_dataset(
@@ -1297,6 +1375,7 @@ def consolidate_stratified_metrics(
     """Índice dataset-level de estratos; no mezcla canales ni kinds incompatibles."""
     scopes = {
         "horizon",
+        "channel",
         "density_bin",
         "max_gap_bin",
         "last_observation_age_bin",

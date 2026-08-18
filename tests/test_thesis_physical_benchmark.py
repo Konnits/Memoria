@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+import scripts.run_thesis_physical_benchmark as thesis_runner
 from scripts.run_thesis_physical_benchmark import (
     DEFAULT_CONFIG,
+    DatasetUnit,
     EXPECTED_SEEDS,
     LATEX_TABLE_FILENAMES,
     ProtocolError,
     aggregate_seed_to_dataset,
     build_run_commands,
     cohort_units,
+    consolidate_stratified_metrics,
     cuda_inventory,
     generate_report,
     implementation_paths,
@@ -23,6 +27,7 @@ from scripts.run_thesis_physical_benchmark import (
     require_compatible_preflight,
     temporal_ablation_summary,
     write_latex_tables,
+    _verify_identifiability_metadata_contract,
     _verify_run_against_preflight,
 )
 
@@ -138,6 +143,134 @@ def test_report_rejects_cli_overrides_despite_same_yaml_hash(override: str) -> N
             dataset_id="bursty_0000",
             model="QueryCross",
         )
+
+
+def _nominal_identifiability_metadata() -> tuple[dict, dict]:
+    versions = {
+        "python_implementation": "CPython",
+        "python": "3.test",
+        "numpy": "numpy.test",
+        "pandas": "pandas.test",
+        "pyarrow": "pyarrow.test",
+        "pyyaml": "pyyaml.test",
+    }
+    executable = str(Path("python-test").resolve())
+    preflight = {
+        "runtime": {
+            "python_executable": executable,
+            "versions": versions,
+            "repository": {"git_head": "abc123"},
+        }
+    }
+    metadata = {
+        "seed": 2026,
+        "n_train_anchors_per_dataset": 64,
+        "n_eval_anchors_per_dataset": 32,
+        "queries_per_anchor": 4,
+        "query_slots_randomized": True,
+        "physical_horizon_range": [0.25, 8.0],
+        "observation_scan_skipped": False,
+        "controls": ["Persistence", "Ordinal", "ExplicitHorizon"],
+        "control_history_values": "clean_truth_oracle",
+        "timestamp_ablations": [
+            "real",
+            "all_equal",
+            "permuted_gaps",
+            "regular_grid",
+            "ordinal",
+            "query_only",
+            "history_only",
+        ],
+        "runtime": {
+            "environment": versions | {"python_executable": executable},
+            "repository": {"git_commit": "abc123", "worktree_dirty": False},
+        },
+    }
+    return metadata, preflight
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("n_train_anchors_per_dataset", 4),
+        ("n_eval_anchors_per_dataset", 2),
+        ("observation_scan_skipped", True),
+        ("query_slots_randomized", False),
+    ],
+)
+def test_report_rejects_reduced_or_altered_identifiability_contract(
+    field: str,
+    invalid_value: object,
+) -> None:
+    config = load_final_config(DEFAULT_CONFIG)
+    metadata, preflight = _nominal_identifiability_metadata()
+    altered = deepcopy(metadata)
+    altered[field] = invalid_value
+
+    with pytest.raises(ProtocolError, match=field):
+        _verify_identifiability_metadata_contract(
+            config=config,
+            metadata=altered,
+            preflight=preflight,
+        )
+
+
+def test_consolidated_strata_preserve_channel_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unit = DatasetUnit(
+        kind="multivariate",
+        preset="test_preset",
+        dataset_id="test_preset_0000",
+        generator_seed=2026,
+    )
+    monkeypatch.setattr(thesis_runner, "EXPECTED_SEEDS", (42,))
+    monkeypatch.setattr(
+        thesis_runner,
+        "cohort_units",
+        lambda _config, _cohort: (unit,),
+    )
+    config = {
+        "dataset_cohorts": {"main": {"output_subdir": "main"}},
+        "models": ["QueryCross"],
+    }
+    metrics_path = (
+        tmp_path
+        / "main"
+        / "physical_models"
+        / unit.kind
+        / unit.preset
+        / unit.dataset_id
+        / "seed_42"
+        / "QueryCross"
+        / "metrics.csv"
+    )
+    metrics_path.parent.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "Kind": unit.kind,
+                "Preset": unit.preset,
+                "Dataset_ID": unit.dataset_id,
+                "Seed": 42,
+                "Model": "QueryCross",
+                "Ablation": "real",
+                "Scope": "channel",
+                "Level": "0",
+                "n": 16,
+                "rmse_z": 0.5,
+            }
+        ]
+    ).to_csv(metrics_path, index=False)
+
+    consolidated = consolidate_stratified_metrics(config, "main", tmp_path)
+
+    assert consolidated[["Scope", "Level"]].to_dict("records") == [
+        {"Scope": "channel", "Level": 0}
+    ]
+    assert consolidated.loc[0, "rmse_z"] == pytest.approx(0.5)
+    assert consolidated.loc[0, "n_seeds"] == 1
 
 
 def test_full_commands_keep_cohorts_outputs_and_dataset_ids_separate(
