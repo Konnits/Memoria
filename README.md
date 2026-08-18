@@ -133,6 +133,22 @@ Memoria/
 | `Custom-OrdinalTime` | `time_encoding_mode="ordinal"` — ignora timestamps reales, usa posición ordinal |
 | `Custom-NoRole` | `use_target_flag_embedding=False` — sin embedding de flag historia/target |
 
+### Variantes experimentales (opt-in)
+
+| Modelo | Cambio aislado |
+|--------|----------------|
+| `Custom-Gaussian` | Cabeza heteroscedástica (media y desviación) entrenada con NLL gaussiana enmascarada |
+| `Custom-LearnableScale` | Escala temporal positiva y aprendible, excluida de weight decay |
+| `Custom-RoPE` | RoPE continuo calculado sobre timestamps reales normalizados |
+| `Custom-TimeWindow` | Atención causal dispersa sobre vecinos dentro de una ventana temporal |
+
+Estas variantes no forman parte del benchmark congelado y se escriben por defecto en
+`experiments/synthetic_architecture_ablations/`:
+
+```powershell
+python scripts/benchmark_synthetic.py --models Custom Custom-Gaussian Custom-LearnableScale Custom-RoPE Custom-TimeWindow --temporal-window 8
+```
+
 ### State-of-the-Art Wrappers
 
 | Modelo | Paper | Arquitectura |
@@ -409,6 +425,7 @@ Helper para construir un Predictor desde una carpeta de experimento generada por
 | `test_hyperparameter_search.py` | Grid/random search, trial generation |
 | `test_structured_metrics.py` | Métricas por horizonte/canal |
 | `test_synthetic_analysis.py` | Análisis estadístico |
+| `test_experimental_architectures.py` | Ablaciones experimentales de arquitectura |
 | `test_time_encoding_ablations.py` | Ablaciones de encoding temporal |
 
 ```powershell

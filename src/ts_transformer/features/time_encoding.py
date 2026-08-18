@@ -48,7 +48,7 @@ def _get_reference_timestamps(
 
 def compute_relative_time_deltas(
     timestamps: torch.Tensor,
-    time_scale: float,
+    time_scale: float | torch.Tensor,
     padding_mask: Optional[torch.Tensor] = None,
     lengths: Optional[torch.Tensor] = None,
     time_transform: Literal["linear", "log1p"] = "linear",
@@ -60,8 +60,20 @@ def compute_relative_time_deltas(
         raise ValueError(
             f"Se esperaban timestamps 2D [B, L], pero se obtuvo {timestamps.shape}."
         )
-    if time_scale <= 0.0:
-        raise ValueError("time_scale debe ser > 0.")
+    if isinstance(time_scale, torch.Tensor):
+        if time_scale.numel() != 1:
+            raise ValueError("time_scale tensor debe ser escalar.")
+        scale = time_scale.to(device=timestamps.device, dtype=timestamps.dtype)
+        if bool((scale <= 0.0).detach().item()):
+            raise ValueError("time_scale debe ser > 0.")
+    else:
+        if time_scale <= 0.0:
+            raise ValueError("time_scale debe ser > 0.")
+        scale = torch.as_tensor(
+            time_scale,
+            device=timestamps.device,
+            dtype=timestamps.dtype,
+        )
     if time_transform not in {"linear", "log1p"}:
         raise ValueError("time_transform debe ser 'linear' o 'log1p'.")
 
@@ -70,7 +82,7 @@ def compute_relative_time_deltas(
         padding_mask=padding_mask,
         lengths=lengths,
     )
-    tau = (timestamps - t0) / float(time_scale)
+    tau = (timestamps - t0) / scale
 
     if time_transform == "log1p":
         tau = torch.log1p(torch.clamp(tau, min=0.0))
@@ -200,6 +212,7 @@ class TimePositionalEncoding(nn.Module):
         mode: Literal["sinusoidal", "ordinal", "mlp", "time2vec"] = "sinusoidal",
         time_transform: Literal["linear", "log1p"] = "log1p",
         mlp_hidden_dim: int = 64,
+        learnable_time_scale: bool = False,
     ) -> None:
         """
         Parameters
@@ -229,11 +242,19 @@ class TimePositionalEncoding(nn.Module):
 
         self.d_model = d_model
         self.time_scale = float(time_scale)
+        self.learnable_time_scale = bool(learnable_time_scale)
         self.mode = mode
         self.time_transform = time_transform
 
         if self.time_scale <= 0.0:
             raise ValueError("time_scale debe ser > 0.")
+
+        if self.learnable_time_scale:
+            self.log_time_scale = nn.Parameter(
+                torch.tensor(math.log(self.time_scale), dtype=torch.float32)
+            )
+        else:
+            self.register_parameter("log_time_scale", None)
 
         if self.time_transform not in {"linear", "log1p"}:
             raise ValueError("time_transform debe ser 'linear' o 'log1p'.")
@@ -311,7 +332,10 @@ class TimePositionalEncoding(nn.Module):
         else:
             tau = compute_relative_time_deltas(
                 timestamps,
-                time_scale=self.time_scale,
+                time_scale=self.current_time_scale(
+                    device=timestamps.device,
+                    dtype=timestamps.dtype,
+                ),
                 padding_mask=padding_mask,
                 lengths=lengths,
                 time_transform=self.time_transform,
@@ -344,3 +368,17 @@ class TimePositionalEncoding(nn.Module):
 
         else:
             raise ValueError(f"Modo de encoding temporal desconocido: {self.mode}")
+
+    def current_time_scale(
+        self,
+        device: Optional[torch.device] = None,
+        dtype: Optional[torch.dtype] = None,
+    ) -> torch.Tensor:
+        """Devuelve una escala positiva, conservando gradiente si es aprendible."""
+        if self.log_time_scale is None:
+            scale = torch.tensor(self.time_scale, dtype=torch.float32)
+        else:
+            scale = self.log_time_scale.clamp(-13.8, 13.8).exp()
+        if device is not None or dtype is not None:
+            scale = scale.to(device=device, dtype=dtype)
+        return scale

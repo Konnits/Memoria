@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from .transformer_blocks import TransformerEncoder
-from .heads import RegressionHead, AttentionPooling
+from .heads import RegressionHead, GaussianRegressionHead, AttentionPooling
 from .masking import validate_target_mask_structure
 
 # Importamos los módulos de embeddings/encodings de tiempo y valores.
@@ -51,6 +51,11 @@ class TimeSeriesTransformerConfig:
     validate_inputs: bool = True
     decoder_num_layers: Optional[int] = None
     temporal_bias_layers: Optional[int] = None
+    prediction_head: str = "point"  # "point" | "gaussian"
+    learnable_time_scale: bool = False
+    use_continuous_rope: bool = False
+    rope_base: float = 10000.0
+    temporal_attention_window: Optional[float] = None
 
 
 class TimeSeriesTransformer(nn.Module):
@@ -83,6 +88,22 @@ class TimeSeriesTransformer(nn.Module):
         self.output_dim = config.output_dim
         self.d_model = config.d_model
 
+        if config.temporal_attention_window is not None:
+            if config.temporal_attention_window <= 0.0:
+                raise ValueError("temporal_attention_window debe ser > 0.")
+            if config.use_temporal_attn_bias:
+                raise ValueError(
+                    "temporal_attention_window y use_temporal_attn_bias no pueden "
+                    "activarse juntos porque el bias materializa una matriz densa."
+                )
+        if config.rope_base <= 1.0:
+            raise ValueError("rope_base debe ser mayor que 1.")
+        if config.learnable_time_scale and config.time_encoding_mode == "ordinal":
+            raise ValueError(
+                "learnable_time_scale no es compatible con time_encoding_mode='ordinal' "
+                "porque ese modo ignora las distancias temporales."
+            )
+
         # Embedding de valores (features continuas multivariadas)
         self.value_embedding = FeatureEmbedding(
             d_in=self.input_dim,
@@ -96,6 +117,7 @@ class TimeSeriesTransformer(nn.Module):
             time_scale=config.time_scale,
             mode=config.time_encoding_mode,
             time_transform=config.time_transform,
+            learnable_time_scale=config.learnable_time_scale,
         )
 
         # Escalas aprendibles para balancear cada componente de embedding.
@@ -142,15 +164,29 @@ class TimeSeriesTransformer(nn.Module):
         )
 
         # Cabeza de regresión sobre el token target
-        self.head = RegressionHead(
-            d_model=self.d_model,
-            output_dim=self.output_dim,
-            hidden_dim=None,
-            dropout=config.dropout,
-            activation=config.activation,
-        )
+        self.prediction_head = str(config.prediction_head).lower()
+        if self.prediction_head == "point":
+            self.head: nn.Module = RegressionHead(
+                d_model=self.d_model,
+                output_dim=self.output_dim,
+                hidden_dim=None,
+                dropout=config.dropout,
+                activation=config.activation,
+            )
+        elif self.prediction_head == "gaussian":
+            self.head = GaussianRegressionHead(
+                d_model=self.d_model,
+                output_dim=self.output_dim,
+            )
+        else:
+            raise ValueError("prediction_head debe ser 'point' o 'gaussian'.")
         # Head auxiliar para modo multi-target-token (K tokens target -> K salidas escalares).
         self.per_target_head = nn.Linear(self.d_model, 1)
+        self.per_target_gaussian_head = (
+            nn.Linear(self.d_model, 2)
+            if self.prediction_head == "gaussian"
+            else None
+        )
 
         self.readout_mode = str(config.readout_mode)
         if self.readout_mode not in {"target_token", "target_plus_attention_pool"}:
@@ -291,12 +327,28 @@ class TimeSeriesTransformer(nn.Module):
             # Usar timestamps normalizados para el bias
             tau = compute_relative_time_deltas(
                 input_timestamps,
-                time_scale=self.config.time_scale,
+                time_scale=self.time_encoding.current_time_scale(
+                    device=input_timestamps.device,
+                    dtype=input_timestamps.dtype,
+                ),
                 padding_mask=padding_mask,
                 lengths=lengths,
                 time_transform="linear",
             )
             temporal_bias = self.temporal_attn_bias(tau, dtype=value_emb.dtype)
+
+        temporal_positions = None
+        if self.config.use_continuous_rope or self.config.temporal_attention_window is not None:
+            temporal_positions = compute_relative_time_deltas(
+                input_timestamps,
+                time_scale=self.time_encoding.current_time_scale(
+                    device=input_timestamps.device,
+                    dtype=input_timestamps.dtype,
+                ),
+                padding_mask=padding_mask,
+                lengths=lengths,
+                time_transform="linear",
+            )
 
         # Encoder Transformer
         if return_all_layers:
@@ -308,6 +360,10 @@ class TimeSeriesTransformer(nn.Module):
                 temporal_bias_layers=temporal_bias_layers,
                 is_causal=is_causal,
                 return_all_layers=True,
+                temporal_positions=temporal_positions,
+                temporal_attention_window=self.config.temporal_attention_window,
+                use_continuous_rope=self.config.use_continuous_rope,
+                rope_base=self.config.rope_base,
             )
         else:
             encoder_output = self.encoder(
@@ -318,6 +374,10 @@ class TimeSeriesTransformer(nn.Module):
                 temporal_bias_layers=temporal_bias_layers,
                 is_causal=is_causal,
                 return_all_layers=False,
+                temporal_positions=temporal_positions,
+                temporal_attention_window=self.config.temporal_attention_window,
+                use_continuous_rope=self.config.use_continuous_rope,
+                rope_base=self.config.rope_base,
             )
             all_layers = None
 
@@ -341,23 +401,38 @@ class TimeSeriesTransformer(nn.Module):
             readout_states = self.readout_fusion(fused)
 
         # Cabeza de regresión
+        log_scale = None
         if self.use_sensor_embedding:
             # Event mode: cada token corresponde a un sensor a predecir.
-            # Salida escalar por token [B, K_total, 1] -> [B, K_total]
-            preds_flat = self.per_target_head(readout_states).squeeze(-1)
+            if self.prediction_head == "gaussian":
+                if self.per_target_gaussian_head is None:
+                    raise RuntimeError("Head gaussiano de eventos no inicializado.")
+                distribution_params = self.per_target_gaussian_head(readout_states)
+                preds_flat = distribution_params[..., 0]
+                log_scale_flat = distribution_params[..., 1].clamp(-7.0, 5.0)
+            else:
+                # Salida escalar por token [B, K_total, 1] -> [B, K_total]
+                preds_flat = self.per_target_head(readout_states).squeeze(-1)
             # Reconstruir [B, M, output_dim]. Asumimos que K_total = M * output_dim
             if num_target_tokens % self.output_dim != 0:
                 raise ValueError(f"num_target_tokens={num_target_tokens} no es divisible por output_dim={self.output_dim}")
             M = num_target_tokens // self.output_dim
             preds = preds_flat.view(B, M, self.output_dim)
+            if self.prediction_head == "gaussian":
+                log_scale = log_scale_flat.view(B, M, self.output_dim)
         else:
             # Dense mode: cada token futuro (M tokens) predice todas las variables.
-            # head produce [B, M, output_dim] directamente (pues num_target_tokens == M)
-            preds = self.head(readout_states)
+            if self.prediction_head == "gaussian":
+                preds, log_scale = self.head(readout_states)
+            else:
+                # head produce [B, M, output_dim] directamente
+                preds = self.head(readout_states)
 
         # Retornar a compatibilidad con código univariado en tiempo
         if preds.shape[1] == 1:
             preds = preds.squeeze(1) # [B, output_dim]
+            if log_scale is not None:
+                log_scale = log_scale.squeeze(1)
 
         if not return_dict:
             return preds
@@ -368,6 +443,8 @@ class TimeSeriesTransformer(nn.Module):
             "readout_states": readout_states,
             "encoder_output": encoder_output,
         }
+        if log_scale is not None:
+            out["log_scale"] = log_scale
         if all_layers is not None:
             out["all_layers"] = all_layers
         return out

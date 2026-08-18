@@ -35,6 +35,22 @@ class TimeSeriesEncoderDecoder(nn.Module):
         self.output_dim = config.output_dim
         self.d_model = config.d_model
 
+        unsupported_experiments = []
+        if str(config.prediction_head).lower() != "point":
+            unsupported_experiments.append("prediction_head")
+        if config.learnable_time_scale:
+            unsupported_experiments.append("learnable_time_scale")
+        if config.use_continuous_rope:
+            unsupported_experiments.append("use_continuous_rope")
+        if config.temporal_attention_window is not None:
+            unsupported_experiments.append("temporal_attention_window")
+        if unsupported_experiments:
+            raise ValueError(
+                "Las variantes experimentales siguientes están implementadas "
+                "para TimeSeriesTransformer, no para EncoderDecoder: "
+                + ", ".join(unsupported_experiments)
+            )
+
         self.value_embedding = FeatureEmbedding(
             d_in=self.input_dim,
             d_model=self.d_model,

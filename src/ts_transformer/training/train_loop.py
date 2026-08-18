@@ -6,6 +6,7 @@ import importlib.util
 
 import os
 import time
+import math
 
 import torch
 from torch import nn
@@ -354,7 +355,12 @@ class Trainer:
 
         # Forward con AMP autocast
         with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
-            preds = self.model(
+            return_distribution = (
+                str(getattr(getattr(self.model, "config", None), "prediction_head", "point"))
+                .lower()
+                == "gaussian"
+            )
+            model_output = self.model(
                 input_values=input_values,
                 input_timestamps=input_timestamps,
                 is_target_mask=is_target_mask,
@@ -362,10 +368,21 @@ class Trainer:
                 padding_mask=padding_mask,
                 lengths=lengths,
                 attn_mask=None,
-                return_dict=False,
-            )  # [B, D_out]
+                return_dict=return_distribution,
+            )
+            if return_distribution:
+                preds = model_output["preds"]
+                log_scale = model_output["log_scale"]
+            else:
+                preds = model_output
+                log_scale = None
 
-            loss = self._compute_loss(preds, target_values, target_loss_mask)
+            loss = self._compute_loss(
+                preds,
+                target_values,
+                target_loss_mask,
+                log_scale=log_scale,
+            )
 
         # Backward con GradScaler
         self.scaler.scale(loss).backward()
@@ -456,6 +473,7 @@ class Trainer:
         all_preds = []
         all_targets = []
         all_target_masks = []
+        all_log_scales = []
 
         for batch in loader:
             input_values = batch["input_values"].to(self.device, non_blocking=True)
@@ -476,7 +494,12 @@ class Trainer:
                 lengths = lengths.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
-                preds = self.model(
+                return_distribution = (
+                    str(getattr(getattr(self.model, "config", None), "prediction_head", "point"))
+                    .lower()
+                    == "gaussian"
+                )
+                model_output = self.model(
                     input_values=input_values,
                     input_timestamps=input_timestamps,
                     is_target_mask=is_target_mask,
@@ -484,11 +507,19 @@ class Trainer:
                     padding_mask=padding_mask,
                     lengths=lengths,
                     attn_mask=None,
-                    return_dict=False,
+                    return_dict=return_distribution,
                 )
+                if return_distribution:
+                    preds = model_output["preds"]
+                    log_scale = model_output["log_scale"]
+                else:
+                    preds = model_output
+                    log_scale = None
 
             all_preds.append(preds.detach().cpu())
             all_targets.append(target_values.detach().cpu())
+            if log_scale is not None:
+                all_log_scales.append(log_scale.detach().cpu())
             if target_loss_mask is not None:
                 all_target_masks.append(target_loss_mask.detach().cpu())
 
@@ -501,7 +532,13 @@ class Trainer:
             torch.cat(all_target_masks, dim=0) if all_target_masks else None
         )
 
-        val_loss = self._compute_loss(preds_cat, targets_cat, target_mask_cat).item()
+        log_scale_cat = torch.cat(all_log_scales, dim=0) if all_log_scales else None
+        val_loss = self._compute_loss(
+            preds_cat,
+            targets_cat,
+            target_mask_cat,
+            log_scale=log_scale_cat,
+        ).item()
 
         if target_mask_cat is not None:
             valid = target_mask_cat > 0.0
@@ -533,6 +570,7 @@ class Trainer:
         all_preds = []
         all_targets = []
         all_target_masks = []
+        all_log_scales = []
 
         for batch in self.val_loader:
             input_values = batch["input_values"].to(self.device, non_blocking=True)
@@ -553,7 +591,12 @@ class Trainer:
                 lengths = lengths.to(self.device, non_blocking=True)
 
             with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_dtype):
-                preds = self.model(
+                return_distribution = (
+                    str(getattr(getattr(self.model, "config", None), "prediction_head", "point"))
+                    .lower()
+                    == "gaussian"
+                )
+                model_output = self.model(
                     input_values=input_values,
                     input_timestamps=input_timestamps,
                     is_target_mask=is_target_mask,
@@ -561,11 +604,19 @@ class Trainer:
                     padding_mask=padding_mask,
                     lengths=lengths,
                     attn_mask=None,
-                    return_dict=False,
+                    return_dict=return_distribution,
                 )
+                if return_distribution:
+                    preds = model_output["preds"]
+                    log_scale = model_output["log_scale"]
+                else:
+                    preds = model_output
+                    log_scale = None
 
             all_preds.append(preds.detach().cpu())
             all_targets.append(target_values.detach().cpu())
+            if log_scale is not None:
+                all_log_scales.append(log_scale.detach().cpu())
             if target_loss_mask is not None:
                 all_target_masks.append(target_loss_mask.detach().cpu())
 
@@ -578,7 +629,13 @@ class Trainer:
         target_mask_cat = torch.cat(all_target_masks, dim=0) if all_target_masks else None
 
         # Pérdida de validación
-        val_loss = self._compute_loss(preds_cat, targets_cat, target_mask_cat).item()
+        log_scale_cat = torch.cat(all_log_scales, dim=0) if all_log_scales else None
+        val_loss = self._compute_loss(
+            preds_cat,
+            targets_cat,
+            target_mask_cat,
+            log_scale=log_scale_cat,
+        ).item()
 
         # Métricas adicionales
         if target_mask_cat is not None:
@@ -613,10 +670,32 @@ class Trainer:
         preds: torch.Tensor,
         targets: torch.Tensor,
         target_loss_mask: Optional[torch.Tensor],
+        log_scale: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Calcula pérdida normal o enmascarada (masked loss) si se provee mask.
         """
+        if log_scale is not None:
+            if preds.ndim + 1 == targets.ndim and targets.shape[1] == 1:
+                preds = preds.unsqueeze(1)
+                log_scale = log_scale.unsqueeze(1)
+            if preds.shape != targets.shape or log_scale.shape != targets.shape:
+                raise ValueError(
+                    "preds, targets y log_scale deben tener la misma shape para NLL. "
+                    f"preds={tuple(preds.shape)}, targets={tuple(targets.shape)}, "
+                    f"log_scale={tuple(log_scale.shape)}"
+                )
+            inverse_variance = torch.exp(-2.0 * log_scale)
+            per = (
+                log_scale
+                + 0.5 * (targets - preds).pow(2) * inverse_variance
+                + 0.5 * math.log(2.0 * math.pi)
+            )
+            if target_loss_mask is None:
+                return per.mean()
+            mask = target_loss_mask.to(device=per.device, dtype=per.dtype)
+            return (per * mask).sum() / mask.sum().clamp_min(1.0)
+
         if target_loss_mask is None:
             return self.loss_fn(preds, targets)
 

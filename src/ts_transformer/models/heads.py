@@ -60,6 +60,30 @@ class RegressionHead(nn.Module):
         return self.net(x)
 
 
+class GaussianRegressionHead(nn.Module):
+    """Cabeza heteroscedástica que predice media y log-desviación."""
+
+    def __init__(
+        self,
+        d_model: int,
+        output_dim: int,
+        min_log_scale: float = -7.0,
+        max_log_scale: float = 5.0,
+    ) -> None:
+        super().__init__()
+        if min_log_scale >= max_log_scale:
+            raise ValueError("min_log_scale debe ser menor que max_log_scale.")
+        self.output_dim = int(output_dim)
+        self.min_log_scale = float(min_log_scale)
+        self.max_log_scale = float(max_log_scale)
+        self.proj = nn.Linear(d_model, 2 * output_dim)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        params = self.proj(x)
+        mean, log_scale = params.split(self.output_dim, dim=-1)
+        return mean, log_scale.clamp(self.min_log_scale, self.max_log_scale)
+
+
 class AttentionPooling(nn.Module):
     """
     Pooling atencional sobre la secuencia para obtener un vector global.

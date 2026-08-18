@@ -67,7 +67,7 @@ from ts_transformer.utils import (
 )
 
 
-MODEL_NAMES = (
+CORE_MODEL_NAMES = (
     "Custom",
     "Custom-TimeBias",
     "Custom-Time2Vec",
@@ -79,8 +79,15 @@ MODEL_NAMES = (
     "Persistence",
     "LastValueTimeMLP",
 )
+EXPERIMENTAL_MODEL_NAMES = (
+    "Custom-Gaussian",
+    "Custom-LearnableScale",
+    "Custom-RoPE",
+    "Custom-TimeWindow",
+)
+MODEL_NAMES = CORE_MODEL_NAMES + EXPERIMENTAL_MODEL_NAMES
 DEFAULT_MODEL_NAMES = tuple(
-    model_name for model_name in MODEL_NAMES if model_name != "Custom-TimeBias"
+    model_name for model_name in CORE_MODEL_NAMES if model_name != "Custom-TimeBias"
 )
 
 MODEL_SIZE_PROFILES = {
@@ -92,6 +99,10 @@ MODEL_SIZE_PROFILES = {
 OPTIMIZED_SIZE = "Optimized"
 DEFAULT_RECIPES_CONFIG = (
     REPOSITORY_ROOT / "configs" / "benchmark" / "synthetic_optuna_best.yaml"
+)
+DEFAULT_BENCHMARK_DIR = REPOSITORY_ROOT / "experiments" / "synthetic_benchmark"
+DEFAULT_EXPERIMENTAL_DIR = (
+    REPOSITORY_ROOT / "experiments" / "synthetic_architecture_ablations"
 )
 
 
@@ -116,7 +127,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_RECIPES_CONFIG,
         help="Recetas congeladas de Optuna para Custom y EncDec-AR.",
     )
-    parser.add_argument("--exp-dir", type=Path, default=REPOSITORY_ROOT / "experiments" / "synthetic_benchmark")
+    parser.add_argument("--exp-dir", type=Path, default=DEFAULT_BENCHMARK_DIR)
     parser.add_argument("--kinds", nargs="+", choices=("univariate", "multivariate"), default=("univariate", "multivariate"))
     parser.add_argument("--presets", nargs="+", default=None)
     parser.add_argument("--seeds", type=int, nargs="+", default=(42, 84, 126))
@@ -130,6 +141,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--prefetch-factor", type=int, default=4)
+    parser.add_argument(
+        "--temporal-window",
+        type=float,
+        default=8.0,
+        help=(
+            "Radio temporal normalizado para Custom-TimeWindow. "
+            "Sólo se usa al solicitar esa variante experimental."
+        ),
+    )
     parser.add_argument("--limit-datasets", type=int, default=None, help="Sólo para pruebas de humo.")
     parser.add_argument(
         "--validate-only",
@@ -618,6 +638,8 @@ def build_models(
     model_sizes: tuple[str, ...],
     recipes: dict[str, Any],
     model_seed: int | None = None,
+    include_experimental: bool = False,
+    experimental_temporal_window: float = 8.0,
 ) -> dict[str, ModelRunSpec]:
     config = copy.deepcopy(model_cfg)
     config.input_dim = data["model_input_dim"]
@@ -673,6 +695,35 @@ def build_models(
         training_family="Custom",
         model_size=OPTIMIZED_SIZE,
     )
+
+    if include_experimental:
+        experimental_configs = {}
+
+        gaussian_config = apply_model_recipe(config, recipes, "Custom")
+        gaussian_config.prediction_head = "gaussian"
+        experimental_configs["Custom-Gaussian"] = gaussian_config
+
+        scale_config = apply_model_recipe(config, recipes, "Custom")
+        scale_config.learnable_time_scale = True
+        experimental_configs["Custom-LearnableScale"] = scale_config
+
+        rope_config = apply_model_recipe(config, recipes, "Custom")
+        rope_config.use_continuous_rope = True
+        experimental_configs["Custom-RoPE"] = rope_config
+
+        window_config = apply_model_recipe(config, recipes, "Custom")
+        window_config.temporal_attention_window = float(experimental_temporal_window)
+        window_config.use_temporal_attn_bias = False
+        experimental_configs["Custom-TimeWindow"] = window_config
+
+        for model_name, experimental_config in experimental_configs.items():
+            reset_initialization_seed()
+            models[model_name] = ModelRunSpec(
+                TimeSeriesTransformer(experimental_config),
+                trainable=True,
+                training_family="Custom",
+                model_size=OPTIMIZED_SIZE,
+            )
     reset_initialization_seed()
     ordinal_config = apply_model_recipe(config, recipes, "Custom")
     ordinal_config.time_encoding_mode = "ordinal"
@@ -880,12 +931,20 @@ def main() -> None:
     requested_models = (
         tuple(args.models) if args.models is not None else DEFAULT_MODEL_NAMES
     )
+    include_experimental = any(
+        model_name in EXPERIMENTAL_MODEL_NAMES for model_name in requested_models
+    )
+    if include_experimental and args.exp_dir == DEFAULT_BENCHMARK_DIR:
+        args.exp_dir = DEFAULT_EXPERIMENTAL_DIR
     selected_sizes = tuple(args.model_sizes)
     args.exp_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "arguments": serializable_arguments(args),
         "benchmark_task": recipes["benchmark_task"],
         "frozen_recipes": recipes["families"],
+        "experimental_models": (
+            list(EXPERIMENTAL_MODEL_NAMES) if include_experimental else []
+        ),
     }
     manifest_name = "preflight_manifest.json" if args.validate_only else "run_manifest.json"
     (args.exp_dir / manifest_name).write_text(
@@ -933,7 +992,13 @@ def main() -> None:
             set_global_seed(args.seeds[0], deterministic=False)
             models = selected_model_variants(
                 build_models(
-                    model_cfg, data, selected_sizes, recipes, model_seed=args.seeds[0]
+                    model_cfg,
+                    data,
+                    selected_sizes,
+                    recipes,
+                    model_seed=args.seeds[0],
+                    include_experimental=include_experimental,
+                    experimental_temporal_window=args.temporal_window,
                 ),
                 requested_models,
             )
@@ -975,7 +1040,15 @@ def main() -> None:
         for seed in args.seeds:
             set_global_seed(seed, deterministic=False)
             models = selected_model_variants(
-                build_models(model_cfg, data, selected_sizes, recipes, model_seed=seed),
+                build_models(
+                    model_cfg,
+                    data,
+                    selected_sizes,
+                    recipes,
+                    model_seed=seed,
+                    include_experimental=include_experimental,
+                    experimental_temporal_window=args.temporal_window,
+                ),
                 requested_models,
             )
             for model_name in list(models):

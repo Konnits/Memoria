@@ -158,6 +158,15 @@ def load_model_config(path: str) -> TimeSeriesTransformerConfig:
             if "temporal_bias_layers" in cfg and cfg["temporal_bias_layers"] is not None
             else None
         ),
+        prediction_head=str(cfg.get("prediction_head", "point")),
+        learnable_time_scale=bool(cfg.get("learnable_time_scale", False)),
+        use_continuous_rope=bool(cfg.get("use_continuous_rope", False)),
+        rope_base=float(cfg.get("rope_base", 10000.0)),
+        temporal_attention_window=(
+            float(cfg["temporal_attention_window"])
+            if cfg.get("temporal_attention_window") is not None
+            else None
+        ),
     )
 
 

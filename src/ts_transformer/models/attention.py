@@ -67,6 +67,10 @@ class MultiHeadSelfAttention(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
         temporal_bias: Optional[torch.Tensor] = None,
         is_causal: bool = False,
+        temporal_positions: Optional[torch.Tensor] = None,
+        temporal_attention_window: Optional[float] = None,
+        use_continuous_rope: bool = False,
+        rope_base: float = 10000.0,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Parameters
@@ -105,6 +109,50 @@ class MultiHeadSelfAttention(nn.Module):
         q = self._shape(q, batch_size, seq_len)  # [B, H, L, d_head]
         k = self._shape(k, batch_size, seq_len)  # [B, H, L, d_head]
         v = self._shape(v, batch_size, seq_len)  # [B, H, L, d_head]
+
+        if use_continuous_rope:
+            if temporal_positions is None:
+                raise ValueError("temporal_positions es requerido para RoPE continuo.")
+            q, k = self._apply_continuous_rope(
+                q,
+                k,
+                temporal_positions,
+                rope_base=rope_base,
+            )
+
+        if temporal_attention_window is not None:
+            if self.return_attn_weights:
+                raise ValueError(
+                    "La atención temporal por ventana no materializa pesos densos."
+                )
+            if temporal_positions is None:
+                raise ValueError(
+                    "temporal_positions es requerido para atención temporal por ventana."
+                )
+            if attn_mask is not None:
+                raise ValueError(
+                    "La atención temporal por ventana no admite attn_mask adicional."
+                )
+            if temporal_bias is not None:
+                raise ValueError(
+                    "Combinar temporal_bias denso con atención por ventana anula "
+                    "el ahorro de memoria; usa sólo uno de los dos modos."
+                )
+            attn_output = self._time_window_attention(
+                q,
+                k,
+                v,
+                temporal_positions=temporal_positions,
+                key_padding_mask=key_padding_mask,
+                is_causal=is_causal,
+                window=float(temporal_attention_window),
+            )
+            attn_output = (
+                attn_output.transpose(1, 2)
+                .contiguous()
+                .view(batch_size, seq_len, self.d_model)
+            )
+            return self.out_proj(attn_output), None
 
         if self.return_attn_weights:
             # --- Fallback Matemático para retornar attn_weights ---
@@ -217,6 +265,127 @@ class MultiHeadSelfAttention(nn.Module):
         out = self.out_proj(attn_output)
 
         return out, attn_weights
+
+    @staticmethod
+    def _apply_continuous_rope(
+        q: torch.Tensor,
+        k: torch.Tensor,
+        positions: torch.Tensor,
+        rope_base: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Aplica RoPE usando posiciones temporales continuas normalizadas."""
+        if positions.shape != (q.shape[0], q.shape[2]):
+            raise ValueError(
+                "temporal_positions debe tener shape [B, L]. "
+                f"Se obtuvo {tuple(positions.shape)}."
+            )
+        if rope_base <= 1.0:
+            raise ValueError("rope_base debe ser mayor que 1.")
+
+        rotary_dim = (q.shape[-1] // 2) * 2
+        if rotary_dim == 0:
+            return q, k
+
+        pair_indices = torch.arange(
+            0,
+            rotary_dim,
+            2,
+            device=q.device,
+            dtype=torch.float32,
+        )
+        inv_freq = torch.pow(
+            torch.tensor(rope_base, device=q.device, dtype=torch.float32),
+            -pair_indices / float(rotary_dim),
+        )
+        angles = positions.to(device=q.device, dtype=torch.float32).unsqueeze(-1) * inv_freq
+        cos = angles.cos().to(q.dtype).unsqueeze(1)
+        sin = angles.sin().to(q.dtype).unsqueeze(1)
+
+        def rotate(x: torch.Tensor) -> torch.Tensor:
+            paired = x[..., :rotary_dim].reshape(*x.shape[:-1], rotary_dim // 2, 2)
+            even = paired[..., 0]
+            odd = paired[..., 1]
+            rotated = torch.stack(
+                (even * cos - odd * sin, even * sin + odd * cos),
+                dim=-1,
+            ).flatten(-2)
+            if rotary_dim == x.shape[-1]:
+                return rotated
+            return torch.cat((rotated, x[..., rotary_dim:]), dim=-1)
+
+        return rotate(q), rotate(k)
+
+    def _time_window_attention(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        temporal_positions: torch.Tensor,
+        key_padding_mask: Optional[torch.Tensor],
+        is_causal: bool,
+        window: float,
+    ) -> torch.Tensor:
+        """Atención O(L*K) sobre vecinos dentro de una ventana temporal."""
+        if window <= 0.0:
+            raise ValueError("temporal_attention_window debe ser > 0.")
+
+        batch_size, num_heads, seq_len, d_head = q.shape
+        if key_padding_mask is None:
+            valid_tokens = torch.ones(
+                batch_size,
+                seq_len,
+                device=q.device,
+                dtype=torch.bool,
+            )
+        else:
+            valid_tokens = ~key_padding_mask.to(device=q.device, dtype=torch.bool)
+            if torch.any(key_padding_mask[:, 1:] & ~key_padding_mask[:, :-1]):
+                raise ValueError(
+                    "La atención temporal por ventana requiere left-padding "
+                    "(todo el padding debe preceder a los tokens válidos)."
+                )
+
+        positions = temporal_positions.to(device=q.device, dtype=torch.float32)
+        valid_pairs = valid_tokens[:, 1:] & valid_tokens[:, :-1]
+        if torch.any(valid_pairs & (positions[:, 1:] < positions[:, :-1])):
+            raise ValueError(
+                "La atención temporal por ventana requiere timestamps no decrecientes."
+            )
+        searchable_positions = positions.masked_fill(~valid_tokens, float("-inf"))
+        left = torch.searchsorted(
+            searchable_positions,
+            positions - window,
+            right=False,
+        )
+        right = torch.searchsorted(
+            searchable_positions,
+            positions + window,
+            right=True,
+        )
+        if is_causal:
+            query_limits = torch.arange(seq_len, device=q.device).view(1, -1) + 1
+            right = torch.minimum(right, query_limits)
+
+        spans = (right - left).clamp_min(0)
+        spans = torch.where(valid_tokens, spans, torch.zeros_like(spans))
+        max_neighbors = max(1, int(spans.max().item()))
+        offsets = torch.arange(max_neighbors, device=q.device).view(1, 1, -1)
+        neighbor_indices = (left.unsqueeze(-1) + offsets).clamp(0, seq_len - 1)
+        neighbor_valid = offsets < spans.unsqueeze(-1)
+
+        batch_indices = torch.arange(batch_size, device=q.device).view(-1, 1, 1, 1)
+        head_indices = torch.arange(num_heads, device=q.device).view(1, -1, 1, 1)
+        expanded_neighbors = neighbor_indices.unsqueeze(1)
+        k_neighbors = k[batch_indices, head_indices, expanded_neighbors, :]
+        v_neighbors = v[batch_indices, head_indices, expanded_neighbors, :]
+
+        scores = (q.unsqueeze(-2) * k_neighbors).sum(dim=-1) / math.sqrt(d_head)
+        valid_scores = neighbor_valid.unsqueeze(1)
+        scores = scores.masked_fill(~valid_scores, float("-inf"))
+        weights = torch.softmax(scores, dim=-1)
+        weights = torch.nan_to_num(weights, nan=0.0)
+        weights = self.dropout(weights)
+        return (weights.unsqueeze(-1) * v_neighbors).sum(dim=-2)
 
 
 class MultiHeadCrossAttention(nn.Module):

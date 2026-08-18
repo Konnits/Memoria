@@ -95,7 +95,7 @@ def _build_parameter_groups(
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if "time_encoding.time2vec" in name:
+        if "time_encoding.time2vec" in name or name.endswith("log_time_scale"):
             no_decay_params.append(param)
         else:
             decay_params.append(param)

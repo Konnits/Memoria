@@ -56,6 +56,10 @@ class TransformerEncoderBlock(nn.Module):
         attn_mask: Optional[torch.Tensor] = None,
         temporal_bias: Optional[torch.Tensor] = None,
         is_causal: bool = False,
+        temporal_positions: Optional[torch.Tensor] = None,
+        temporal_attention_window: Optional[float] = None,
+        use_continuous_rope: bool = False,
+        rope_base: float = 10000.0,
     ) -> torch.Tensor:
         """
         Parameters
@@ -83,6 +87,10 @@ class TransformerEncoderBlock(nn.Module):
             attn_mask=attn_mask,
             temporal_bias=temporal_bias,
             is_causal=is_causal,
+            temporal_positions=temporal_positions,
+            temporal_attention_window=temporal_attention_window,
+            use_continuous_rope=use_continuous_rope,
+            rope_base=rope_base,
         )
         x = x + self.dropout(attn_output)
 
@@ -136,6 +144,10 @@ class TransformerEncoder(nn.Module):
         temporal_bias_layers: Optional[int] = None,
         is_causal: bool = False,
         return_all_layers: bool = False,
+        temporal_positions: Optional[torch.Tensor] = None,
+        temporal_attention_window: Optional[float] = None,
+        use_continuous_rope: bool = False,
+        rope_base: float = 10000.0,
     ) -> torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
         """
         Parameters
@@ -175,6 +187,10 @@ class TransformerEncoder(nn.Module):
                 attn_mask=attn_mask,
                 temporal_bias=layer_temporal_bias,
                 is_causal=is_causal,
+                temporal_positions=temporal_positions,
+                temporal_attention_window=temporal_attention_window,
+                use_continuous_rope=use_continuous_rope,
+                rope_base=rope_base,
             )
             if return_all_layers:
                 all_layers.append(x)
