@@ -8,6 +8,7 @@ from torch import nn
 
 from .transformer_blocks import TransformerEncoder, TransformerDecoder
 from .heads import RegressionHead
+from .masking import validate_target_mask_structure
 from .time_series_transformer import TimeSeriesTransformerConfig
 
 from ..features.value_embedding import FeatureEmbedding
@@ -162,13 +163,15 @@ class TimeSeriesEncoderDecoder(nn.Module):
 
         # Separar historial de target estructuralmente (Slicing)
         # Asumiendo contrato de SequenceBuilder: targets siempre al final
-        target_counts = is_target_mask.sum(dim=1)
-        num_target_tokens = int(target_counts[0].item())
+        if self.config.validate_inputs:
+            num_target_tokens = validate_target_mask_structure(
+                is_target_mask,
+                batch_size=B,
+                seq_len=L,
+            )
+        else:
+            num_target_tokens = int(is_target_mask[0].sum().item())
         num_history_tokens = L - num_target_tokens
-
-        if __debug__:
-            assert is_target_mask[:, -num_target_tokens:].all() and (~is_target_mask[:, :-num_target_tokens]).all(), \
-                "Error: is_target_mask indica que los targets no están estrictamente al final."
 
         # x_enc: historia
         x_enc = x_all[:, :num_history_tokens, :]

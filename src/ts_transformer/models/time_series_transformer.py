@@ -8,6 +8,7 @@ from torch import nn
 
 from .transformer_blocks import TransformerEncoder
 from .heads import RegressionHead, AttentionPooling
+from .masking import validate_target_mask_structure
 
 # Importamos los módulos de embeddings/encodings de tiempo y valores.
 # Se asume que existen en ts_transformer.features con las firmas:
@@ -228,31 +229,17 @@ class TimeSeriesTransformer(nn.Module):
                     f"pero se obtuvo {tuple(input_timestamps.shape)}."
                 )
 
-            if is_target_mask.shape != (B, L):
-                raise ValueError(
-                    f"is_target_mask debe tener shape [B, L]={B, L}, "
-                    f"pero se obtuvo {tuple(is_target_mask.shape)}."
-                )
-
             if padding_mask is not None and padding_mask.shape != (B, L):
                 raise ValueError(
                     f"padding_mask debe tener shape [B, L]={B, L}, "
                     f"pero se obtuvo {tuple(padding_mask.shape)}."
                 )
 
-            # Comprobamos que haya al menos un token target por secuencia
-            target_counts = is_target_mask.sum(dim=1)
-            if not torch.all(target_counts > 0):
-                raise ValueError(
-                    "Cada secuencia debe tener al menos un token target (is_target_mask True). "
-                    f"Se obtuvieron cuentas {target_counts.tolist()}."
-                )
-            if not torch.all(target_counts == target_counts[0]):
-                raise ValueError(
-                    "Todas las secuencias del batch deben tener el mismo número de target tokens. "
-                    f"Se obtuvieron cuentas {target_counts.tolist()}."
-                )
-            num_target_tokens = int(target_counts[0].item())
+            num_target_tokens = validate_target_mask_structure(
+                is_target_mask,
+                batch_size=B,
+                seq_len=L,
+            )
         else:
             num_target_tokens = int(is_target_mask[0].sum().item())
 
@@ -335,11 +322,8 @@ class TimeSeriesTransformer(nn.Module):
             all_layers = None
 
         # Extraer estados de tokens target
-        # En esta arquitectura estructurada (dictada por SequenceBuilder),
-        # los targets siempre se ubican al final de la secuencia.
-        if __debug__ and self.config.validate_inputs:
-            assert is_target_mask[:, -num_target_tokens:].all() and (~is_target_mask[:, :-num_target_tokens]).all(), \
-                "Error: is_target_mask indica que los targets no están estrictamente al final."
+        # En esta arquitectura estructurada (dictada por SequenceBuilder), la
+        # validación anterior garantiza que los targets están al final.
         target_states = encoder_output[:, -num_target_tokens:, :]
 
         readout_states = target_states
