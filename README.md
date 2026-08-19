@@ -89,12 +89,13 @@ se descarta; nunca se fabrica una observación cero. `data_metadata.json` regist
 por split candidatos, aceptados, descartados por causa y ejemplos retenidos tras
 el cap de ejecución.
 
-### Cierre de tesis: protocolo físico acelerado v2
+### Cierre de tesis: protocolo físico secuencial v3
 
 El punto de entrada recomendado para concluir la tesis es
 `scripts/run_thesis_physical_benchmark.py`, gobernado exclusivamente por
 `configs/benchmark/thesis_physical_final.yaml`. La interfaz pública conserva un
-único proceso coordinador: no hay que calcular ni asignar shards manualmente.
+único proceso coordinador y ejecuta un solo proceso de entrenamiento a la vez;
+no hay que calcular ni asignar shards manualmente.
 Todos los comandos deben ejecutarse desde la raíz del repositorio con el entorno
 `memoria`:
 
@@ -107,7 +108,7 @@ conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py dry-run
 conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py smoke `
     --config configs/benchmark/thesis_physical_final.yaml
 
-# 3. Audita, ejecuta los shards físicos automáticos y consolida el reporte final
+# 3. Audita, ejecuta la campaña física secuencial y consolida el reporte final
 conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py all `
     --config configs/benchmark/thesis_physical_final.yaml
 ```
@@ -116,12 +117,12 @@ conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py all `
 worktree limpios, `pytest` completo, `git diff --check`, hashes de fuentes y el
 runtime CUDA requerido. Si esa auditoría falla, no inicia entrenamiento.
 
-Durante los shards, el coordinador imprime periódicamente cuántos siguen activos
-y dónde están sus logs. Para observar el detalle de un shard en otra terminal de
-PowerShell se puede usar, por ejemplo:
+Durante la ejecución, el coordinador imprime periódicamente el estado del único
+proceso físico y la ubicación de su log. Para observarlo en otra terminal de
+PowerShell se puede usar:
 
 ```powershell
-Get-Content experiments/thesis_physical_benchmark_v2/main/logs/physical_models_shard_0.stdout.log -Wait
+Get-Content experiments/thesis_physical_benchmark_v3/main/logs/physical_models_shard_0.stdout.log -Wait
 ```
 
 El protocolo selecciona exactamente **16 unidades main** (8 presets por
@@ -132,7 +133,7 @@ confundirse con las del generador. Los nueve modelos definidos en el YAML
 producen 432 corridas main y 54 stress, además de los controles de
 identificabilidad exigidos por el orquestador.
 
-La ejecución v2 conserva `batch_size=32` y `num_workers=0`, y habilita las rutas
+La ejecución v3 conserva `batch_size=32` y `num_workers=0`, y habilita las rutas
 CUDA rápidas disponibles en el runtime: TF32 y kernels SDPA Flash o
 memory-efficient, con fallback compatible cuando alguno no está disponible.
 Las seeds, la selección de datos, los hiperparámetros y los fingerprints siguen
@@ -142,47 +143,45 @@ repeticiones que elijan kernels distintos; las conclusiones se basan en las tres
 semillas y no en coincidencia binaria de tensores.
 
 La configuración declara el listado completo y un `protocol_index` canónico por
-unidad; el coordinador valida ese orden antes de distribuir las unidades físicas
-en **cuatro shards concurrentes para main** y **dos para stress**, sin depender
-del orden de finalización ni de qué resultados ya existan. Cada shard publica y
-valida sus propios sentinels, fingerprints y artefactos; al repetir `all`, cada
-uno reanuda únicamente el trabajo compatible que le falta. Un fallo conserva
-esos sentinels, pero no publica una consolidación parcial ni habilita el
-reporte. La auditoría de identificabilidad permanece serial y el reporte se
-genera sólo cuando todos los shards de ambas cohortes y los controles requeridos
-están completos.
+unidad. Cada cohorte usa exclusivamente `shard_0`: primero se completa `main` y
+luego `stress`, con un solo proceso residente en la GPU y cada combinación de
+dataset, modelo y seed ejecutada de forma secuencial. El proceso publica y valida
+sus sentinels, fingerprints y artefactos; al repetir `all`, reanuda únicamente
+el trabajo compatible que falta. Un fallo conserva esos sentinels, pero no
+publica una consolidación parcial ni habilita el reporte. La auditoría de
+identificabilidad también permanece serial y el reporte se genera sólo cuando
+ambas cohortes y los controles requeridos están completos.
 
-La salida nueva queda en `experiments/thesis_physical_benchmark_v2/`. Dentro de
-`main/`, las corridas reanudables viven en
-`physical_model_shards/shard_{0..3}/`; dentro de `stress_gseed3031/`, en
-`physical_model_shards/shard_{0..1}/`. Cada una tiene su log
-`logs/physical_models_shard_<N>.{stdout,stderr}.log`. Después de validar todos
-los shards de la cohorte, el coordinador publica atómicamente
+La salida nueva queda en `experiments/thesis_physical_benchmark_v3/`. Tanto en
+`main/` como en `stress_gseed3031/`, las corridas reanudables viven en
+`physical_model_shards/shard_0/` y usan
+`logs/physical_models_shard_0.{stdout,stderr}.log`. Después de validar el único
+shard de la cohorte, el coordinador publica atómicamente
 `physical_models/`; los controles seriales se guardan en
 `temporal_identifiability/`. En la raíz, `reports/`
 contiene las agregaciones por dataset, preset emparejado, macro y estratos, mientras
 `report_manifest.json` registra completitud y hashes. El flujo también escribe en
-`experiments/thesis_physical_benchmark_v2/latex/` las tablas
+`experiments/thesis_physical_benchmark_v3/latex/` las tablas
 `protocol_summary.tex`, `model_results.tex`, `temporal_ablations.tex` y
 `gaussian_calibration.tex`, únicamente tras completar todas las corridas
-esperadas. Una salida parcial del protocolo v1 en
-`experiments/thesis_physical_benchmark/` es histórica: no se copia, mezcla ni
-reutiliza en v2 porque cambió el contrato de ejecución y su fingerprint.
+esperadas. Las salidas de v1 en `experiments/thesis_physical_benchmark/` y de v2
+en `experiments/thesis_physical_benchmark_v2/` son históricas: no se copian,
+mezclan ni reutilizan en v3 porque cambió el contrato de ejecución y su
+fingerprint.
 
 Las optimizaciones se aceptaron con pruebas de equivalencia y probes separados
-de la campaña final. En el hardware de desarrollo se midieron **8.34x**
-en la construcción/evaluación de filas, **1.38x** en diagnósticos exactos por
-sensor y **1.594x** de concurrencia sobre el mismo conjunto de cuatro trabajos:
-cuatro procesos tardaron 35.928 s frente a 57.278 s con dos. Para ocho trabajos,
-dos tandas de cuatro tardaron 69.566 s, mientras ocho procesos simultáneos
-tardaron 71.218 s; por eso el máximo adoptado es cuatro y no ocho. `main` usa
-N=4 para sus 16 unidades y `stress` N=2 para sus 2 unidades. Son mediciones de
-ingeniería, no resultados científicos ni una garantía de aceleración en otro
-equipo. Se descartó aumentar el batch a 128
-porque habría cambiado la dinámica de optimización congelada; también se
-descartó `num_workers>0` porque el costo de procesos en Windows no mejoró el
-tiempo total del protocolo. Por eso v2 acelera evaluación, diagnóstico,
-reanudación y concurrencia sin alterar batch ni DataLoader.
+de la campaña final. En el hardware de desarrollo se midieron **8.34x** en la
+construcción/evaluación de filas y **1.38x** en diagnósticos exactos por sensor.
+Un probe adicional mostró que cuatro procesos concurrentes lograban mayor
+throughput: 35.928 s frente a 57.278 s con dos sobre el mismo conjunto de cuatro
+trabajos. Aun así, v3 descarta esa concurrencia porque eleva el uso y la
+contención de CPU, mantiene varios procesos y modelos activos a la vez y dificulta observar y
+reiniciar una campaña de una sola GPU. La ejecución secuencial busca consumo de
+recursos predecible y operación sencilla; no se afirma que minimice el tiempo de
+pared absoluto. También se descartaron batch 128, porque habría cambiado la
+dinámica de optimización congelada, y `num_workers>0`, porque el costo de procesos
+en Windows no mejoró el tiempo total. V3 conserva las aceleraciones internas de
+evaluación, diagnóstico y reanudación sin alterar batch ni DataLoader.
 
 Este cierre es una **evaluación retrospectiva de datos sintéticos generados
 previamente**. No equivale a validación externa ni a desempeño prospectivo en
@@ -194,7 +193,7 @@ preflight y constituye un protocolo nuevo.
 ### Runners de diagnóstico
 
 Los siguientes comandos de bajo nivel también leen `data/univariate` y
-`data/multivariate`, pero no reemplazan el protocolo final v2 de cierre:
+`data/multivariate`, pero no reemplazan el protocolo final v3 de cierre:
 
 ```powershell
 # Auditoría rápida de identificabilidad, precisión y controles no neuronales
@@ -294,7 +293,7 @@ Memoria/
 │   ├── benchmark_final.py             ← Alias de benchmark_synthetic.py
 │   ├── benchmark_synthetic.py         ← Motor principal del benchmark (1056 líneas)
 │   ├── benchmark_physical_models.py   ← Benchmark neuronal con horizontes físicos
-│   ├── run_thesis_physical_benchmark.py ← Coordinador v2 con shards automáticos
+│   ├── run_thesis_physical_benchmark.py ← Coordinador v3 de ejecución secuencial
 │   ├── temporal_identifiability_benchmark.py ← Controles y corruptelas temporales
 │   ├── microbenchmark_physical_evaluation.py ← Equivalencia y costo del reporting
 │   ├── probe_physical_loader_performance.py ← Perfil de batch, workers y diagnósticos
@@ -310,7 +309,7 @@ Memoria/
 │   │   ├── synthetic_physical_protocol.yaml ← Protocolo con tiempo físico
 │   │   ├── physical_models.yaml       ← Parámetros ejecutables del runner físico
 │   │   ├── temporal_identifiability.yaml ← Auditoría de identificabilidad
-│   │   └── thesis_physical_final.yaml ← Protocolo final v2 acelerado y cohortes exactas
+│   │   └── thesis_physical_final.yaml ← Protocolo final v3 secuencial y cohortes exactas
 │   ├── model/
 │   │   └── synthetic_transformer.yaml ← Arquitectura base del Transformer
 │   ├── training/
@@ -319,7 +318,7 @@ Memoria/
 ├── experiments/                       ← Resultados
 │   ├── synthetic_benchmark/           ← Resultados del benchmark
 │   ├── physical_models/               ← Benchmark con horizontes físicos
-│   ├── thesis_physical_benchmark_v2/   ← Corridas y tablas del cierre final v2
+│   ├── thesis_physical_benchmark_v3/   ← Corridas y tablas del cierre final v3
 │   ├── temporal_identifiability/      ← Controles y auditorías temporales
 │   ├── optuna_synthetic_fixed_task/   ← Estudios Optuna comparables (db + CSV)
 │   └── synthetic_preflight*/          ← Preflight runs
@@ -879,11 +878,11 @@ Estilo APA, español, Biber backend.
 | Protocolo de tiempo físico | `configs/benchmark/synthetic_physical_protocol.yaml` |
 | Configuración del runner físico | `configs/benchmark/physical_models.yaml` |
 | Protocolo de identificabilidad | `configs/benchmark/temporal_identifiability.yaml` |
-| Protocolo final v2 acelerado | `configs/benchmark/thesis_physical_final.yaml` |
+| Protocolo final v3 secuencial | `configs/benchmark/thesis_physical_final.yaml` |
 | Arquitectura base | `configs/model/synthetic_transformer.yaml` |
 | Resultados del benchmark | `experiments/synthetic_benchmark/` |
 | Estudios Optuna de tarea fija | `experiments/optuna_synthetic_fixed_task/` |
 | Estudios Optuna físicos | `experiments/optuna_physical/` |
-| Salida física final v2 | `experiments/thesis_physical_benchmark_v2/` |
+| Salida física final v3 | `experiments/thesis_physical_benchmark_v3/` |
 | Tesis LaTeX | `latex/main.tex` |
 | Papers referenciados | `papers/` |
