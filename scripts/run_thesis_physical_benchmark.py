@@ -24,6 +24,11 @@ import math
 import os
 import platform
 import shutil
+
+# ponytail: evita thrashing de CPU; GPU saturará más rápido con batches pequeños
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 import subprocess
 import sys
 import time
