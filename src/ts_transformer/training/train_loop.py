@@ -375,10 +375,18 @@ class Trainer:
 
             if self.config.log_every_n_steps > 0 and step % self.config.log_every_n_steps == 0:
                 avg_loss = float((running_loss / num_batches).item())
+                total = len(self.train_loader)
+                progress = int(30 * step / total) if total > 0 else 0
+                bar = "=" * progress + "." * max(0, 30 - progress)
+                # ponytail: progreso en-lugar (sin dependencias extra) como TensorFlow para reducir spam
                 print(
-                    f"[Epoch {epoch:03d}] Step {step:05d} "
-                    f"- train_loss (promedio) = {avg_loss:.6f}"
+                    f"\r[Epoch {epoch:03d}] {step:05d}/{total:05d} [{bar}] - loss: {avg_loss:.4f}",
+                    end="",
+                    flush=True,
                 )
+
+        if self.config.log_every_n_steps > 0 and num_batches > 0:
+            print()
 
         if num_batches == 0:
             return 0.0
