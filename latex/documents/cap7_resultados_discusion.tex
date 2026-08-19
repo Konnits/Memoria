@@ -225,8 +225,8 @@ El MAPE presenta alta variabilidad en las corridas actuales y, en algunas varian
 Esta sección se puebla exclusivamente con artefactos producidos por el modo \textttbreak{report} después de completar la campaña definida en \nolinkurl{configs/benchmark/thesis_physical_final.yaml}. Los archivos provenientes de \textttbreak{smoke} no satisfacen la cobertura de 16 unidades principales, tres semillas y todos los modelos, y por tanto no se usan para ordenar arquitecturas ni formular conclusiones.
 
 \subsection{Estado y cobertura del protocolo}
-\IfFileExists{../experiments/thesis_physical_benchmark/latex/protocol_summary.tex}{%
-    \input{../experiments/thesis_physical_benchmark/latex/protocol_summary.tex}%
+\IfFileExists{../experiments/thesis_physical_benchmark_v2/latex/protocol_summary.tex}{%
+    \input{../experiments/thesis_physical_benchmark_v2/latex/protocol_summary.tex}%
 }{%
     \begin{quote}
     \emph{Reporte físico pendiente.} No existe todavía \nolinkurl{protocol_summary.tex}; antes de interpretar resultados debe completarse \textttbreak{run} y luego ejecutarse \textttbreak{report}. La ausencia del archivo no se reemplaza con métricas de smoke.
@@ -234,8 +234,8 @@ Esta sección se puebla exclusivamente con artefactos producidos por el modo \te
 }
 
 \subsection{Métricas puntuales y ranking principal}
-\IfFileExists{../experiments/thesis_physical_benchmark/latex/model_results.tex}{%
-    \input{../experiments/thesis_physical_benchmark/latex/model_results.tex}%
+\IfFileExists{../experiments/thesis_physical_benchmark_v2/latex/model_results.tex}{%
+    \input{../experiments/thesis_physical_benchmark_v2/latex/model_results.tex}%
 }{%
     \begin{quote}
     \emph{Tabla pendiente.} El ranking puntual se incorporará sólo cuando \nolinkurl{model_results.tex} contenga la agregación semillas $\rightarrow$ unidad, modalidades $\rightarrow$ preset y macro-promedio entre los ocho presets.
@@ -243,8 +243,8 @@ Esta sección se puebla exclusivamente con artefactos producidos por el modo \te
 }
 
 \subsection{Ablaciones y dificultad temporal}
-\IfFileExists{../experiments/thesis_physical_benchmark/latex/temporal_ablations.tex}{%
-    \input{../experiments/thesis_physical_benchmark/latex/temporal_ablations.tex}%
+\IfFileExists{../experiments/thesis_physical_benchmark_v2/latex/temporal_ablations.tex}{%
+    \input{../experiments/thesis_physical_benchmark_v2/latex/temporal_ablations.tex}%
 }{%
     \begin{quote}
     \emph{Tabla pendiente.} \nolinkurl{temporal_ablations.tex} incorporará las ablaciones temporales y su desglose por horizonte. Los diagnósticos más detallados por gap, densidad y edad de la última observación permanecerán en los artefactos CSV de cada ejecución y del reporte; un promedio global no sustituye su inspección.
@@ -252,8 +252,8 @@ Esta sección se puebla exclusivamente con artefactos producidos por el modo \te
 }
 
 \subsection{Calibración probabilística}
-\IfFileExists{../experiments/thesis_physical_benchmark/latex/gaussian_calibration.tex}{%
-    \input{../experiments/thesis_physical_benchmark/latex/gaussian_calibration.tex}%
+\IfFileExists{../experiments/thesis_physical_benchmark_v2/latex/gaussian_calibration.tex}{%
+    \input{../experiments/thesis_physical_benchmark_v2/latex/gaussian_calibration.tex}%
 }{%
     \begin{quote}
     \emph{Tabla pendiente.} NLL, CRPS, escala predictiva y coberturas de 90\% y 95\% se incorporarán desde \nolinkurl{gaussian_calibration.tex} una vez completadas las variantes gaussianas.

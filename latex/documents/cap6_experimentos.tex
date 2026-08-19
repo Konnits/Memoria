@@ -149,7 +149,7 @@ El orquestador admite seleccionar rangos de datasets, semillas, subconjuntos de 
 \section{Evaluación física sintética congelada}
 \label{sec:benchmark-fisico}
 
-La segunda evaluación está especificada en \nolinkurl{configs/benchmark/thesis_physical_final.yaml} y se ejecuta exclusivamente mediante \nolinkurl{scripts/run_thesis_physical_benchmark.py}. Su estado versionado exacto es \nolinkurl{thesis_physical_evaluation_v1_frozen}. El archivo YAML fija a priori datos, semillas, modelos, presupuesto, selección de checkpoints, métricas y rutas de salida. El runner no ejecuta tuning automático ni modifica hiperparámetros a partir del conjunto de test. Su interpretación es retrospectiva: los procesos sintéticos ya generados y sus diagnósticos fueron inspeccionados durante el desarrollo, por lo que no se presenta como una prueba prospectiva ciega.
+La segunda evaluación está especificada en \nolinkurl{configs/benchmark/thesis_physical_final.yaml} y se ejecuta exclusivamente mediante \nolinkurl{scripts/run_thesis_physical_benchmark.py}. Su estado versionado exacto es \nolinkurl{thesis_physical_evaluation_v2_frozen}. El archivo YAML fija a priori datos, semillas, modelos, presupuesto, selección de checkpoints, métricas, concurrencia y rutas de salida. El runner no ejecuta tuning automático ni modifica hiperparámetros a partir del conjunto de test. Su interpretación es retrospectiva: los procesos sintéticos ya generados y sus diagnósticos fueron inspeccionados durante el desarrollo, por lo que no se presenta como una prueba prospectiva ciega.
 
 \subsection{Unidades experimentales y partición principal--estrés}
 
@@ -175,6 +175,8 @@ Se ejecutan las semillas 42, 84 y 126 para los siguientes sistemas:
 \end{itemize}
 Las variantes puntuales minimizan su pérdida de regresión y seleccionan checkpoint por \textttbreak{val\_rmse}. Las gaussianas minimizan NLL heteroscedástica y seleccionan por \textttbreak{val\_nll}. La receta física usa AdamW y \textttbreak{CosineAnnealingLR} sin warmup, a diferencia del warmup más coseno del benchmark legado. Las comparaciones de ablación reutilizan inicializaciones emparejadas cuando el grafo común lo permite. Los hiperparámetros permanecen fijados en el YAML antes de evaluar test. La campaña usa batch 32, \textttbreak{num\_workers=0} y CUDA obligatoria; el preflight verifica disponibilidad de la GPU RTX 5090 y memoria antes de habilitar la corrida completa.
 
+La versión v2 activa TF32 y los kernels SDPA rápidos disponibles, incluidos Flash Attention o la ruta eficiente en memoria cuando PyTorch puede utilizarlos. Las seeds siguen fijando muestreo, inicialización y orden de ejemplos, pero estos kernels no garantizan igualdad bit a bit entre ejecuciones o versiones de CUDA. En consecuencia, la reproducibilidad reclamada es estadística y trazable: se conservan tres seeds, configuración efectiva, hashes de código y datos, entorno numérico y métricas completas; no se afirma determinismo binario.
+
 \subsection{Identificabilidad y métricas}
 
 Antes del ranking neuronal se audita que el slot de query no determine el horizonte y se comparan controles de persistencia, representación ordinal y horizonte explícito. Las corruptelas emparejadas incluyen timestamps reales, igualados, gaps permutados, grilla regular, orden ordinal, \textttbreak{query\_only} y \textttbreak{history\_only}. Estos diagnósticos distinguen sensibilidad temporal de una simple asociación con orden o densidad; no demuestran por sí solos causalidad sobre datos reales.
@@ -185,22 +187,20 @@ La agregación respeta la jerarquía experimental. Primero se promedian las semi
 
 \subsection{Ejecución y estado de los resultados}
 
-El runner ofrece los modos \textttbreak{preflight}, \textttbreak{dry-run}, \textttbreak{smoke}, \textttbreak{run} y \textttbreak{report}. El modo \textttbreak{smoke} usa un presupuesto reducido para validar lectura de datos, forward, backward, checkpoints y reportes; sus métricas no constituyen un ranking. Sólo \textttbreak{run} completo, seguido de \textttbreak{report}, puede poblar las tablas finales del Capítulo~\ref{cap:resultados}. La salida se guarda bajo \nolinkurl{experiments/thesis_physical_benchmark/}, separando resultados principales y de estrés. Para reducir costo de entrada/salida se cachea de forma perezosa únicamente la historia determinista submuestreada; los targets nunca se cachean y las queries de entrenamiento continúan cambiando por época.
+El runner ofrece los modos \textttbreak{preflight}, \textttbreak{dry-run}, \textttbreak{smoke}, \textttbreak{run} y \textttbreak{report}, además de \textttbreak{all} para ejecutar la secuencia completa. El modo \textttbreak{smoke} usa un presupuesto reducido para validar lectura de datos, forward, backward, checkpoints y reportes; sus métricas no constituyen un ranking. Sólo \textttbreak{run} completo, seguido de \textttbreak{report}, puede poblar las tablas finales del Capítulo~\ref{cap:resultados}. La salida v2 se guarda bajo \nolinkurl{experiments/thesis_physical_benchmark_v2/}; los artefactos parciales de v1 permanecen aislados y no se reutilizan.
 
-La ejecución reproducible se inicia con:
+La cohorte principal se distribuye en cuatro shards concurrentes, balanceados y no solapados; la cohorte de estrés, al contener sólo dos unidades, usa dos. Cada dataset conserva un \textttbreak{protocol\_index} canónico, de modo que dividir la campaña no modifica la seed usada para construir historias y queries. Cada shard mantiene juntos todos los modelos y seeds de sus datasets para reutilizar la preparación y las cachés, escribe logs y sentinels propios, y sólo se publica un consolidado después de validar la unión exacta sin duplicados ni faltantes. La lectura de Parquet se omite al reanudar un dataset ya completo y compatible. Durante evaluación se reutilizan transferencias CPU--GPU, se vectoriza la construcción de métricas y se preindexan diagnósticos por sensor. La historia determinista submuestreada puede cachearse; los targets nunca se cachean y las queries de entrenamiento continúan cambiando por época.
+
+El grado de concurrencia se eligió mediante probes de ingeniería ajenos al ranking científico. Sobre el mismo conjunto de cuatro trabajos, cuatro procesos tardaron 35.928 segundos frente a 57.278 con dos. Para ocho trabajos, dos tandas de cuatro tardaron 69.566 segundos y ocho procesos simultáneos 71.218; por ello se descartó aumentar la concurrencia a ocho. También se descartaron batches mayores y workers adicionales: el primero alteraba la dinámica de optimización y el segundo no redujo el tiempo total en Windows. Estas mediciones justifican la configuración de ejecución, pero no se interpretan como resultados de precisión del modelo.
+
+La ejecución completa se inicia con un único comando:
 \begin{verbatim}
 conda.exe run -n memoria python \
-  scripts/run_thesis_physical_benchmark.py preflight \
-  --config configs/benchmark/thesis_physical_final.yaml
-
-conda.exe run -n memoria python \
-  scripts/run_thesis_physical_benchmark.py run \
-  --config configs/benchmark/thesis_physical_final.yaml
-
-conda.exe run -n memoria python \
-  scripts/run_thesis_physical_benchmark.py report \
+  scripts/run_thesis_physical_benchmark.py all \
   --config configs/benchmark/thesis_physical_final.yaml
 \end{verbatim}
+
+El subcomando \textttbreak{all} ejecuta preflight, shards físicos, controles de identificabilidad y reporte. Ante una interrupción, repetir el mismo comando reanuda únicamente artefactos completos con fingerprint compatible.
 
 \section{Resumen metodológico}
 \label{sec:resumen-metodologico}
