@@ -164,6 +164,20 @@ class PreparedPhysicalData:
     forecast_origin_audit: dict[str, dict[str, Any]] | None = None
 
 
+@dataclass(frozen=True, order=True)
+class ExactDatasetUnit:
+    """Unidad física exacta con su índice estable dentro del protocolo."""
+
+    kind: str
+    preset: str
+    dataset_id: str
+    protocol_index: int
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self.kind, self.preset, self.dataset_id
+
+
 class PhysicalCollate:
     """Collate estándar más masa/densidad de observaciones por token."""
 
@@ -193,6 +207,18 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=None,
         help="Filtra IDs exactos (p.ej. long_gaps_gseed3031_0000).",
+    )
+    parser.add_argument(
+        "--dataset-unit",
+        dest="dataset_units",
+        action="append",
+        default=None,
+        metavar="KIND:PRESET:DATASET_ID:PROTOCOL_INDEX",
+        help=(
+            "Selecciona una unidad exacta y fija su índice global de protocolo. "
+            "Es repetible e incompatible con --kinds/--presets/--dataset-ids/"
+            "--limit-datasets-per-kind."
+        ),
     )
     parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=None)
@@ -238,7 +264,7 @@ def parse_args() -> argparse.Namespace:
         "--non-deterministic",
         dest="deterministic",
         action="store_false",
-        help="Permite rutas rápidas no deterministas (no usar en el benchmark final).",
+        help="Permite kernels CUDA rápidos no deterministas.",
     )
     parser.add_argument("--d-model", type=int, default=None)
     parser.add_argument("--num-heads", type=int, default=None)
@@ -276,6 +302,38 @@ def _option(args: argparse.Namespace, name: str, config: Mapping[str, Any], key:
     return config[key] if value is None else value
 
 
+def parse_exact_dataset_unit(value: str) -> ExactDatasetUnit:
+    """Decodifica una selección sin producir filtros cartesianos accidentales."""
+    parts = value.split(":")
+    if len(parts) != 4 or any(not part for part in parts):
+        raise ValueError(
+            "--dataset-unit debe usar KIND:PRESET:DATASET_ID:PROTOCOL_INDEX."
+        )
+    kind, preset, dataset_id, raw_index = parts
+    if kind not in {"univariate", "multivariate"}:
+        raise ValueError(f"Kind inválido en --dataset-unit: {kind!r}.")
+    try:
+        protocol_index = int(raw_index)
+    except ValueError as exc:
+        raise ValueError(
+            f"protocol_index inválido en --dataset-unit: {raw_index!r}."
+        ) from exc
+    if protocol_index < 0:
+        raise ValueError("protocol_index debe ser >= 0.")
+    return ExactDatasetUnit(kind, preset, dataset_id, protocol_index)
+
+
+def normalize_exact_dataset_units(
+    values: Sequence[str] | None,
+) -> tuple[ExactDatasetUnit, ...]:
+    units = tuple(parse_exact_dataset_unit(value) for value in (values or ()))
+    if len({unit.key for unit in units}) != len(units):
+        raise ValueError("--dataset-unit contiene unidades físicas duplicadas.")
+    if len({unit.protocol_index for unit in units}) != len(units):
+        raise ValueError("--dataset-unit contiene protocol_index duplicados.")
+    return tuple(sorted(units, key=lambda unit: unit.protocol_index))
+
+
 def resolve_options(args: argparse.Namespace, raw: Mapping[str, Any]) -> argparse.Namespace:
     data = raw["data"]
     task = raw["task"]
@@ -284,6 +342,15 @@ def resolve_options(args: argparse.Namespace, raw: Mapping[str, Any]) -> argpars
     training = raw["training"]
     evaluation = raw["evaluation"]
 
+    exact_values = getattr(args, "dataset_units", None)
+    if exact_values and any(
+        getattr(args, name, None) is not None
+        for name in ("kinds", "presets", "dataset_ids", "limit_datasets_per_kind")
+    ):
+        raise ValueError(
+            "--dataset-unit es incompatible con los filtros cartesianos de datasets."
+        )
+    args.dataset_units = normalize_exact_dataset_units(exact_values)
     args.data_root = Path(args.data_root or data.get("root", REPOSITORY_ROOT / "data"))
     if not args.data_root.is_absolute():
         args.data_root = REPOSITORY_ROOT / args.data_root
@@ -446,6 +513,31 @@ def discover_datasets(
     return result
 
 
+def discover_exact_datasets(
+    data_root: Path,
+    units: Sequence[ExactDatasetUnit],
+) -> list[tuple[ExactDatasetUnit, tuple[str, str, Path, Path]]]:
+    """Resuelve rutas directas para una lista exacta, preservando protocol_index."""
+    if not units:
+        raise ValueError("La selección exacta de datasets quedó vacía.")
+    result: list[tuple[ExactDatasetUnit, tuple[str, str, Path, Path]]] = []
+    for unit in sorted(units, key=lambda item: item.protocol_index):
+        directory = data_root / unit.kind / unit.preset / unit.dataset_id
+        observations = directory / "observations.parquet"
+        truth = directory / "truth.parquet"
+        missing = [str(path) for path in (observations, truth) if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                "Faltan fuentes de la unidad exacta "
+                f"{unit.kind}/{unit.preset}/{unit.dataset_id}: "
+                + ", ".join(missing)
+            )
+        result.append(
+            (unit, (unit.kind, unit.preset, observations, truth))
+        )
+    return result
+
+
 def read_truth(truth_path: Path, kind: str) -> pd.DataFrame:
     columns = ["time", "clean_value", "split"]
     if kind == "multivariate":
@@ -480,42 +572,113 @@ def read_observation_interval(
     batch_size: int = 250_000,
 ) -> pd.DataFrame:
     """Lee por batches y mantiene una muestra uniforme si se solicita cap."""
+    return read_observation_intervals(
+        observations_path,
+        kind,
+        {"selected": bounds},
+        max_rows=max_rows,
+        seeds={"selected": seed},
+        batch_size=batch_size,
+    )["selected"]
+
+
+def read_observation_intervals(
+    observations_path: Path,
+    kind: str,
+    bounds_by_split: Mapping[str, tuple[float, float]],
+    *,
+    max_rows: int | None,
+    seeds: Mapping[str, int],
+    batch_size: int = 250_000,
+) -> dict[str, pd.DataFrame]:
+    """Lee varios intervalos en un único scan y conserva la selección previa.
+
+    Los intervalos pueden solaparse porque validation/test necesitan historia
+    del split anterior. Cada intervalo mantiene su propio reservoir y RNG, por
+    lo que el resultado con cap coincide con leerlos por separado en el mismo
+    orden físico del Parquet.
+    """
+    if not bounds_by_split:
+        raise ValueError("bounds_by_split no puede estar vacío.")
+    if set(bounds_by_split) != set(seeds):
+        raise ValueError("Cada intervalo requiere una seed explícita.")
+    for name, (start, end) in bounds_by_split.items():
+        if not np.isfinite([start, end]).all() or end < start:
+            raise ValueError(f"Intervalo inválido para {name}: {(start, end)}")
+
     columns = ["time", "value", "split", "event_index"]
     if kind == "multivariate":
         columns.append("channel_index")
     dataset = pads.dataset(observations_path, format="parquet")
-    condition = (pads.field("time") >= bounds[0]) & (pads.field("time") <= bounds[1])
+    union_start = min(bounds[0] for bounds in bounds_by_split.values())
+    union_end = max(bounds[1] for bounds in bounds_by_split.values())
+    condition = (pads.field("time") >= union_start) & (
+        pads.field("time") <= union_end
+    )
     scanner = dataset.scanner(columns=columns, filter=condition, batch_size=batch_size)
-    generator = np.random.default_rng(seed)
-    chunks: list[pd.DataFrame] = []
-    reservoir: pd.DataFrame | None = None
+    generators = {
+        name: np.random.default_rng(int(seeds[name])) for name in bounds_by_split
+    }
+    chunks: dict[str, list[pd.DataFrame]] = {
+        name: [] for name in bounds_by_split
+    }
+    reservoirs: dict[str, pd.DataFrame | None] = {
+        name: None for name in bounds_by_split
+    }
     for record_batch in scanner.to_batches():
         frame = record_batch.to_pandas()
         if frame.empty:
             continue
-        if max_rows is None:
-            chunks.append(frame)
-            continue
-        frame["_priority"] = generator.random(len(frame))
-        combined = frame if reservoir is None else pd.concat([reservoir, frame], ignore_index=True)
-        if len(combined) > max_rows:
-            selected = np.argpartition(
-                combined["_priority"].to_numpy(), max_rows - 1
-            )[:max_rows]
-            reservoir = combined.iloc[selected].copy()
-        else:
-            reservoir = combined
+        times = frame["time"].to_numpy(dtype=np.float64, copy=False)
+        times_are_sorted = bool(
+            times.size < 2 or np.all(times[1:] >= times[:-1])
+        )
+        for name, (start, end) in bounds_by_split.items():
+            if times_are_sorted:
+                left = int(np.searchsorted(times, start, side="left"))
+                right = int(np.searchsorted(times, end, side="right"))
+                selected_frame = frame.iloc[left:right].copy()
+            else:
+                selected_frame = frame.loc[
+                    (times >= start) & (times <= end)
+                ].copy()
+            if selected_frame.empty:
+                continue
+            if max_rows is None:
+                chunks[name].append(selected_frame)
+                continue
+            selected_frame["_priority"] = generators[name].random(
+                len(selected_frame)
+            )
+            reservoir = reservoirs[name]
+            combined = (
+                selected_frame
+                if reservoir is None
+                else pd.concat([reservoir, selected_frame], ignore_index=True)
+            )
+            if len(combined) > max_rows:
+                selected = np.argpartition(
+                    combined["_priority"].to_numpy(), max_rows - 1
+                )[:max_rows]
+                reservoirs[name] = combined.iloc[selected].copy()
+            else:
+                reservoirs[name] = combined
 
-    if max_rows is None:
-        if not chunks:
-            raise ValueError(f"No hay observaciones en intervalo {bounds}.")
-        result = pd.concat(chunks, ignore_index=True)
-    else:
-        if reservoir is None or reservoir.empty:
-            raise ValueError(f"No hay observaciones en intervalo {bounds}.")
-        result = reservoir.drop(columns="_priority")
-    sort_columns = ["time", "event_index"]
-    return result.sort_values(sort_columns, kind="stable").reset_index(drop=True)
+    results: dict[str, pd.DataFrame] = {}
+    for name, bounds in bounds_by_split.items():
+        if max_rows is None:
+            if not chunks[name]:
+                raise ValueError(f"No hay observaciones en intervalo {bounds}.")
+            result = pd.concat(chunks[name], ignore_index=True)
+        else:
+            reservoir = reservoirs[name]
+            if reservoir is None or reservoir.empty:
+                raise ValueError(f"No hay observaciones en intervalo {bounds}.")
+            result = reservoir.drop(columns="_priority")
+        results[name] = result.sort_values(
+            ["time", "event_index"], kind="stable"
+        ).reset_index(drop=True)
+    return results
 
 
 def fit_channel_scaler(
@@ -694,16 +857,20 @@ def prepare_physical_data(
     kind, preset, observations_path, truth_path = dataset_spec
     truth = read_truth(truth_path, kind)
     n_channels = int(truth["channel_index"].max()) + 1
-    observation_frames: dict[str, pd.DataFrame] = {}
-    for split_index, split in enumerate(SPLIT_NAMES):
-        bounds = _time_bounds_for_split(truth, split, history_duration)
-        observation_frames[split] = read_observation_interval(
-            observations_path,
-            kind,
-            bounds,
-            max_rows=max_observation_rows_per_split,
-            seed=protocol_seed + split_index,
-        )
+    split_bounds = {
+        split: _time_bounds_for_split(truth, split, history_duration)
+        for split in SPLIT_NAMES
+    }
+    observation_frames = read_observation_intervals(
+        observations_path,
+        kind,
+        split_bounds,
+        max_rows=max_observation_rows_per_split,
+        seeds={
+            split: protocol_seed + split_index
+            for split_index, split in enumerate(SPLIT_NAMES)
+        },
+    )
     scaler = fit_channel_scaler(observation_frames["train"], kind, n_channels)
     datasets = {}
     forecast_origin_audit: dict[str, dict[str, Any]] = {}
@@ -974,6 +1141,75 @@ def ablate_batch_timestamps(
     return transformed
 
 
+_STATIC_MODEL_INPUT_KEYS = (
+    "input_values",
+    "is_target_mask",
+    "padding_mask",
+    "lengths",
+    "input_sensor_ids",
+    "temporal_features",
+)
+
+
+def _static_model_batch_to_device(
+    batch: Mapping[str, torch.Tensor], device: torch.device
+) -> dict[str, torch.Tensor | None]:
+    """Transfiere una sola vez los tensores invariantes entre ablaciones.
+
+    Los timestamps son la única entrada que cambia entre ablaciones y se
+    transfieren por separado. Mantener este helper fuera del loop evita copiar
+    valores, máscaras, ids y features temporales hasta ocho veces por batch.
+    """
+
+    prepared: dict[str, torch.Tensor | None] = {}
+    for key in _STATIC_MODEL_INPUT_KEYS:
+        value = batch.get(key)
+        prepared[key] = (
+            value.to(device, non_blocking=True) if value is not None else None
+        )
+    return prepared
+
+
+def _forward_prepared_model(
+    model: nn.Module,
+    prepared_batch: Mapping[str, torch.Tensor | None],
+    timestamps: torch.Tensor,
+    *,
+    target_ndim: int,
+    zero_temporal_features: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Forward sobre tensores ya residentes en el device del modelo."""
+
+    gaussian = (
+        str(getattr(getattr(model, "config", None), "prediction_head", "point")).lower()
+        == "gaussian"
+    )
+    kwargs: dict[str, Any] = {
+        "input_values": prepared_batch["input_values"],
+        "input_timestamps": timestamps,
+        "is_target_mask": prepared_batch["is_target_mask"],
+        "padding_mask": prepared_batch.get("padding_mask"),
+        "lengths": prepared_batch.get("lengths"),
+        "input_sensor_ids": prepared_batch.get("input_sensor_ids"),
+        "temporal_features": prepared_batch.get("temporal_features"),
+        "return_dict": gaussian,
+    }
+    if zero_temporal_features and kwargs["temporal_features"] is not None:
+        kwargs["temporal_features"] = torch.zeros_like(
+            kwargs["temporal_features"]
+        )
+    prediction = model(**kwargs)
+    log_scale = None
+    if isinstance(prediction, dict):
+        log_scale = prediction.get("log_scale")
+        prediction = prediction["preds"]
+    if prediction.ndim == 2 and target_ndim == 3:
+        prediction = prediction.unsqueeze(1)
+        if log_scale is not None:
+            log_scale = log_scale.unsqueeze(1)
+    return prediction.detach(), log_scale.detach() if log_scale is not None else None
+
+
 def _forward_model(
     model: nn.Module,
     batch: Mapping[str, torch.Tensor],
@@ -982,40 +1218,24 @@ def _forward_model(
     *,
     zero_temporal_features: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    gaussian = (
-        str(getattr(getattr(model, "config", None), "prediction_head", "point")).lower()
-        == "gaussian"
+    """Wrapper compatible para un forward aislado y retorno en CPU.
+
+    La evaluación masiva usa :func:`_forward_prepared_model` directamente para
+    amortizar transferencias; este wrapper conserva la semántica previa para
+    callers unitarios.
+    """
+
+    prepared = _static_model_batch_to_device(batch, device)
+    prediction, log_scale = _forward_prepared_model(
+        model,
+        prepared,
+        timestamps.to(device, non_blocking=True),
+        target_ndim=batch["target_values"].ndim,
+        zero_temporal_features=zero_temporal_features,
     )
-    kwargs: dict[str, Any] = {
-        "input_values": batch["input_values"].to(device),
-        "input_timestamps": timestamps.to(device),
-        "is_target_mask": batch["is_target_mask"].to(device),
-        "padding_mask": batch.get("padding_mask", None),
-        "lengths": batch.get("lengths", None),
-        "input_sensor_ids": batch.get("input_sensor_ids", None),
-        "temporal_features": batch.get("temporal_features", None),
-        "return_dict": gaussian,
-    }
-    if zero_temporal_features and kwargs["temporal_features"] is not None:
-        kwargs["temporal_features"] = torch.zeros_like(
-            kwargs["temporal_features"]
-        )
-    for key in ("padding_mask", "lengths", "input_sensor_ids", "temporal_features"):
-        if kwargs[key] is not None:
-            kwargs[key] = kwargs[key].to(device)
-    prediction = model(**kwargs)
-    log_scale = None
-    if isinstance(prediction, dict):
-        log_scale = prediction.get("log_scale")
-        prediction = prediction["preds"]
-    target = batch["target_values"]
-    if prediction.ndim == 2 and target.ndim == 3:
-        prediction = prediction.unsqueeze(1)
-        if log_scale is not None:
-            log_scale = log_scale.unsqueeze(1)
     return (
-        prediction.detach().cpu(),
-        log_scale.detach().cpu() if log_scale is not None else None,
+        prediction.cpu(),
+        log_scale.cpu() if log_scale is not None else None,
     )
 
 
@@ -1049,6 +1269,113 @@ def _gaussian_diagnostics(
         "scale": scale_z * channel_std,
         "nll": nll_z + math.log(channel_std),
         "crps": crps_z * channel_std,
+    }
+
+
+_DISTRIBUTION_COLUMNS = (
+    "log_scale_z",
+    "scale_z",
+    "nll_z",
+    "crps_z",
+    "coverage_90",
+    "coverage_95",
+    "scale",
+    "nll",
+    "crps",
+)
+
+_PREDICTION_ROW_COLUMNS = (
+    "Dataset_ID",
+    "Kind",
+    "Preset",
+    "Seed",
+    "Model",
+    "Ablation",
+    "Example",
+    "Target_Index",
+    "Horizon",
+    "Query_Time",
+    "Channel",
+    "history_events",
+    "sampled_history_events",
+    "density",
+    "max_gap",
+    "median_gap",
+    "last_observation_age",
+    "global_history_events",
+    "global_density",
+    "global_max_gap",
+    "global_median_gap",
+    "global_last_observation_age",
+    "prediction_z",
+    "target_z",
+    "prediction",
+    "target",
+    *_DISTRIBUTION_COLUMNS,
+)
+
+
+def _gaussian_diagnostics_arrays(
+    prediction_z: np.ndarray,
+    target_z: np.ndarray,
+    log_scale_z: np.ndarray,
+    channel_std: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Versión vectorizada de ``_gaussian_diagnostics`` en float64.
+
+    Se conserva exactamente el clamp de reporte ``[-20, 20]``. ``math.erf``
+    se aplica con ``fromiter`` para mantener la misma implementación escalar de
+    la CDF sin introducir una dependencia adicional ni cambiar su semántica.
+    """
+
+    prediction = np.asarray(prediction_z, dtype=np.float64)
+    target = np.asarray(target_z, dtype=np.float64)
+    raw_log_scale = np.asarray(log_scale_z, dtype=np.float64)
+    channel_scale = np.asarray(channel_std, dtype=np.float64)
+    if not (
+        prediction.shape
+        == target.shape
+        == raw_log_scale.shape
+        == channel_scale.shape
+    ):
+        raise ValueError("Los diagnósticos gaussianos requieren arrays de igual shape.")
+
+    scale_z = np.exp(np.clip(raw_log_scale, -20.0, 20.0))
+    standardized_error = (target - prediction) / scale_z
+    nll_z = (
+        0.5 * math.log(2.0 * math.pi)
+        + np.log(scale_z)
+        + 0.5 * np.square(standardized_error)
+    )
+    phi = np.exp(-0.5 * np.square(standardized_error)) / math.sqrt(
+        2.0 * math.pi
+    )
+    erf_argument = standardized_error / math.sqrt(2.0)
+    erf_values = np.fromiter(
+        (math.erf(float(value)) for value in erf_argument),
+        dtype=np.float64,
+        count=erf_argument.size,
+    )
+    cdf = 0.5 * (1.0 + erf_values)
+    crps_z = scale_z * (
+        standardized_error * (2.0 * cdf - 1.0)
+        + 2.0 * phi
+        - 1.0 / math.sqrt(math.pi)
+    )
+    return {
+        "log_scale_z": raw_log_scale,
+        "scale_z": scale_z,
+        "nll_z": nll_z,
+        "crps_z": crps_z,
+        "coverage_90": (
+            np.abs(standardized_error) <= 1.6448536269514722
+        ).astype(np.float64),
+        "coverage_95": (
+            np.abs(standardized_error) <= 1.959963984540054
+        ).astype(np.float64),
+        "scale": scale_z * channel_scale,
+        "nll": nll_z + np.log(channel_scale),
+        "crps": crps_z * channel_scale,
     }
 
 
@@ -1143,6 +1470,198 @@ def _history_statistics(
     }
 
 
+def _prediction_row_template(
+    batch: Mapping[str, torch.Tensor],
+    data: PreparedPhysicalData,
+    statistics: Sequence[Mapping[str, torch.Tensor | float]],
+    *,
+    model_name: str,
+    seed: int,
+    example_offset: int,
+    history_duration: float,
+) -> tuple[pd.DataFrame, np.ndarray, tuple[int, int, int]]:
+    """Construye una vez las columnas invariantes de todas las ablaciones."""
+
+    targets_tensor = batch["target_values"]
+    if targets_tensor.ndim != 3:
+        raise ValueError(
+            "target_values debe tener shape [batch, horizontes, canales]; "
+            f"se obtuvo {tuple(targets_tensor.shape)}."
+        )
+    batch_size, n_horizons, n_channels = map(int, targets_tensor.shape)
+    if n_channels != data.n_channels:
+        raise ValueError(
+            f"target_values contiene {n_channels} canales; se esperaban "
+            f"{data.n_channels}."
+        )
+    if len(statistics) != batch_size:
+        raise ValueError("Debe existir un diagnóstico histórico por ejemplo.")
+
+    masks_tensor = batch.get(
+        "target_loss_mask", torch.ones_like(targets_tensor)
+    ) > 0
+    if masks_tensor.shape != targets_tensor.shape:
+        raise ValueError("target_loss_mask debe coincidir con target_values.")
+    horizons_tensor = batch["requested_target_horizons"].to(torch.float64)
+    queries_tensor = batch["absolute_target_timestamps"].to(torch.float64)
+    expected_query_shape = (batch_size, n_horizons)
+    if tuple(horizons_tensor.shape) != expected_query_shape:
+        raise ValueError(
+            "requested_target_horizons debe tener shape "
+            f"{expected_query_shape}; se obtuvo {tuple(horizons_tensor.shape)}."
+        )
+    if tuple(queries_tensor.shape) != expected_query_shape:
+        raise ValueError(
+            "absolute_target_timestamps debe tener shape "
+            f"{expected_query_shape}; se obtuvo {tuple(queries_tensor.shape)}."
+        )
+
+    target_shape = (batch_size, n_horizons, n_channels)
+    mask = masks_tensor.detach().cpu().numpy().reshape(-1)
+    flat_positions = np.flatnonzero(mask)
+    sample_indices, horizon_indices, channel_indices = np.unravel_index(
+        flat_positions, target_shape
+    )
+
+    def matrix(name: str) -> np.ndarray:
+        values = []
+        for sample_statistics in statistics:
+            value = sample_statistics[name]
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+            values.append(np.asarray(value, dtype=np.float64))
+        stacked = np.stack(values, axis=0)
+        if stacked.shape != (batch_size, n_channels):
+            raise ValueError(
+                f"{name} debe formar una matriz {(batch_size, n_channels)}; "
+                f"se obtuvo {stacked.shape}."
+            )
+        return stacked
+
+    sensor_counts = matrix("sensor_counts")
+    sampled_counts = matrix("sampled_counts")
+    sensor_max_gaps = matrix("sensor_max_gaps")
+    sensor_median_gaps = matrix("sensor_median_gaps")
+    sensor_last_ages = matrix("sensor_last_ages")
+
+    def global_vector(name: str) -> np.ndarray:
+        return np.asarray(
+            [float(sample_statistics[name]) for sample_statistics in statistics],
+            dtype=np.float64,
+        )
+
+    global_counts = global_vector("global_count")
+    global_max_gaps = global_vector("global_max_gap")
+    global_median_gaps = global_vector("global_median_gap")
+    global_last_ages = global_vector("global_last_age")
+    targets = (
+        targets_tensor.detach().cpu().numpy().astype(np.float64, copy=False)
+    )
+    horizons = horizons_tensor.detach().cpu().numpy()
+    queries = queries_tensor.detach().cpu().numpy()
+    target_z = targets[sample_indices, horizon_indices, channel_indices]
+    channel_std = np.asarray(data.scaler.std, dtype=np.float64)[channel_indices]
+    channel_mean = np.asarray(data.scaler.mean, dtype=np.float64)[channel_indices]
+    n_rows = flat_positions.size
+    template = pd.DataFrame(
+        {
+            "Dataset_ID": np.full(n_rows, data.dataset_id, dtype=object),
+            "Kind": np.full(n_rows, data.kind, dtype=object),
+            "Preset": np.full(n_rows, data.preset, dtype=object),
+            "Seed": np.full(n_rows, seed, dtype=np.int64),
+            "Model": np.full(n_rows, model_name, dtype=object),
+            "Example": (sample_indices + example_offset).astype(
+                np.int64, copy=False
+            ),
+            "Target_Index": horizon_indices.astype(np.int64, copy=False),
+            "Horizon": horizons[sample_indices, horizon_indices],
+            "Query_Time": queries[sample_indices, horizon_indices],
+            "Channel": channel_indices.astype(np.int64, copy=False),
+            "history_events": sensor_counts[
+                sample_indices, channel_indices
+            ].astype(np.int64),
+            "sampled_history_events": sampled_counts[
+                sample_indices, channel_indices
+            ].astype(np.int64),
+            "density": sensor_counts[sample_indices, channel_indices]
+            / history_duration,
+            "max_gap": sensor_max_gaps[sample_indices, channel_indices],
+            "median_gap": sensor_median_gaps[sample_indices, channel_indices],
+            "last_observation_age": sensor_last_ages[
+                sample_indices, channel_indices
+            ],
+            "global_history_events": global_counts[sample_indices].astype(
+                np.int64
+            ),
+            "global_density": global_counts[sample_indices] / history_duration,
+            "global_max_gap": global_max_gaps[sample_indices],
+            "global_median_gap": global_median_gaps[sample_indices],
+            "global_last_observation_age": global_last_ages[sample_indices],
+            "target_z": target_z,
+            "target": target_z * channel_std + channel_mean,
+        }
+    )
+    return template, flat_positions, target_shape
+
+
+def _prediction_frame_for_ablation(
+    template: pd.DataFrame,
+    flat_positions: np.ndarray,
+    target_shape: tuple[int, int, int],
+    predictions_z: torch.Tensor,
+    log_scales_z: torch.Tensor | None,
+    *,
+    ablation: str,
+    scaler: ChannelScaler,
+) -> pd.DataFrame:
+    """Agrega predicción/distribución sin bucles por celda."""
+
+    if tuple(predictions_z.shape) != target_shape:
+        raise ValueError(
+            f"Predicción {tuple(predictions_z.shape)} != target {target_shape}"
+        )
+    prediction_values = (
+        predictions_z.detach()
+        .cpu()
+        .numpy()
+        .astype(np.float64, copy=False)
+        .reshape(-1)[flat_positions]
+    )
+    channels = template["Channel"].to_numpy(dtype=np.int64, copy=False)
+    channel_std = np.asarray(scaler.std, dtype=np.float64)[channels]
+    channel_mean = np.asarray(scaler.mean, dtype=np.float64)[channels]
+    frame = template.copy(deep=False)
+    frame.insert(5, "Ablation", ablation)
+    frame["prediction_z"] = prediction_values
+    frame["prediction"] = prediction_values * channel_std + channel_mean
+
+    if log_scales_z is None:
+        nan_values = np.full(len(frame), math.nan, dtype=np.float64)
+        for column in _DISTRIBUTION_COLUMNS:
+            frame[column] = nan_values
+    else:
+        if tuple(log_scales_z.shape) != target_shape:
+            raise ValueError(
+                f"log_scale {tuple(log_scales_z.shape)} != target {target_shape}"
+            )
+        log_scale_values = (
+            log_scales_z.detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64, copy=False)
+            .reshape(-1)[flat_positions]
+        )
+        diagnostics = _gaussian_diagnostics_arrays(
+            prediction_values,
+            template["target_z"].to_numpy(dtype=np.float64, copy=False),
+            log_scale_values,
+            channel_std,
+        )
+        for column in _DISTRIBUTION_COLUMNS:
+            frame[column] = diagnostics[column]
+    return frame.loc[:, _PREDICTION_ROW_COLUMNS]
+
+
 @torch.inference_mode()
 def evaluate_prediction_rows(
     model: nn.Module | None,
@@ -1158,133 +1677,111 @@ def evaluate_prediction_rows(
     device_object = torch.device(device)
     if model is not None:
         model.eval()
-    records: list[dict[str, float | int | str]] = []
+    frames: list[pd.DataFrame] = []
     example_offset = 0
     for batch_index, batch in enumerate(loader):
         targets_z = batch["target_values"]
-        masks = batch.get("target_loss_mask", torch.ones_like(targets_z)) > 0
-        horizons = batch["requested_target_horizons"].to(torch.float64)
-        absolute_queries = batch["absolute_target_timestamps"].to(torch.float64)
         statistics = [
             _history_statistics(batch, index, history_duration, data.n_channels)
             for index in range(targets_z.shape[0])
         ]
+        template, flat_positions, target_shape = _prediction_row_template(
+            batch,
+            data,
+            statistics,
+            model_name=model_name,
+            seed=seed,
+            example_offset=example_offset,
+            history_duration=history_duration,
+        )
+        ablation_specs: list[tuple[str, bool]] = []
+        timestamp_variants: list[torch.Tensor] = []
         for ablation_index, ablation in enumerate(timestamp_ablations):
+            if ablation not in TIMESTAMP_ABLATIONS:
+                raise ValueError(f"Ablación desconocida: {ablation}")
             canonical_ablation = canonical_ablation_name(ablation)
-            timestamps = ablate_batch_timestamps(
-                batch,
-                canonical_ablation,
-                output_dim=data.n_channels,
-                seed=seed + batch_index * 1000 + ablation_index,
+            ablation_specs.append(
+                (
+                    canonical_ablation,
+                    canonical_ablation.endswith("_no_count_feature"),
+                )
             )
-            if model is None:
-                predictions_z = persistence_predictions(batch, data.n_channels)
-                log_scales_z = None
-            else:
-                predictions_z, log_scales_z = _forward_model(
+            if model is not None:
+                timestamp_variants.append(
+                    ablate_batch_timestamps(
+                        batch,
+                        canonical_ablation,
+                        output_dim=data.n_channels,
+                        seed=seed + batch_index * 1000 + ablation_index,
+                    )
+                )
+
+        if model is None:
+            persistence = persistence_predictions(batch, data.n_channels)
+            predictions_by_ablation = [persistence] * len(ablation_specs)
+            log_scales_by_ablation: list[torch.Tensor | None] = [None] * len(
+                ablation_specs
+            )
+        elif ablation_specs:
+            prepared_batch = _static_model_batch_to_device(batch, device_object)
+            device_timestamps = torch.stack(timestamp_variants, dim=0).to(
+                device_object, non_blocking=True
+            )
+            device_predictions: list[torch.Tensor] = []
+            device_log_scales: list[torch.Tensor] = []
+            for ablation_index, (_, zero_temporal_features) in enumerate(
+                ablation_specs
+            ):
+                prediction, log_scale = _forward_prepared_model(
                     model,
-                    batch,
-                    device_object,
-                    timestamps,
-                    zero_temporal_features=canonical_ablation.endswith(
-                        "_no_count_feature"
-                    ),
+                    prepared_batch,
+                    device_timestamps[ablation_index],
+                    target_ndim=targets_z.ndim,
+                    zero_temporal_features=zero_temporal_features,
                 )
-            if predictions_z.shape != targets_z.shape:
-                raise ValueError(
-                    f"Predicción {tuple(predictions_z.shape)} != target {tuple(targets_z.shape)}"
+                if tuple(prediction.shape) != target_shape:
+                    raise ValueError(
+                        f"Predicción {tuple(prediction.shape)} != target {target_shape}"
+                    )
+                device_predictions.append(prediction)
+                if log_scale is not None:
+                    device_log_scales.append(log_scale)
+            predictions_tensor = torch.stack(device_predictions, dim=0).cpu()
+            predictions_by_ablation = list(predictions_tensor.unbind(0))
+            if device_log_scales:
+                if len(device_log_scales) != len(device_predictions):
+                    raise ValueError(
+                        "El modelo mezcló outputs puntuales y gaussianos entre ablaciones."
+                    )
+                log_scale_tensor = torch.stack(device_log_scales, dim=0).cpu()
+                log_scales_by_ablation = list(log_scale_tensor.unbind(0))
+            else:
+                log_scales_by_ablation = [None] * len(ablation_specs)
+        else:
+            predictions_by_ablation = []
+            log_scales_by_ablation = []
+
+        if not template.empty:
+            for (canonical_ablation, _), predictions_z, log_scales_z in zip(
+                ablation_specs,
+                predictions_by_ablation,
+                log_scales_by_ablation,
+            ):
+                frames.append(
+                    _prediction_frame_for_ablation(
+                        template,
+                        flat_positions,
+                        target_shape,
+                        predictions_z,
+                        log_scales_z,
+                        ablation=canonical_ablation,
+                        scaler=data.scaler,
+                    )
                 )
-            for sample in range(targets_z.shape[0]):
-                sample_statistics = statistics[sample]
-                for horizon_index in range(targets_z.shape[1]):
-                    for channel in range(data.n_channels):
-                        if not bool(masks[sample, horizon_index, channel]):
-                            continue
-                        prediction_z = float(predictions_z[sample, horizon_index, channel])
-                        target_z = float(targets_z[sample, horizon_index, channel])
-                        prediction = float(
-                            data.scaler.inverse_channel(np.asarray(prediction_z), channel)
-                        )
-                        target = float(
-                            data.scaler.inverse_channel(np.asarray(target_z), channel)
-                        )
-                        sensor_count = float(
-                            sample_statistics["sensor_counts"][channel]
-                        )
-                        sampled_sensor_count = int(
-                            sample_statistics["sampled_counts"][channel]
-                        )
-                        max_gap = float(
-                            sample_statistics["sensor_max_gaps"][channel]
-                        )
-                        median_gap = float(
-                            sample_statistics["sensor_median_gaps"][channel]
-                        )
-                        last_observation_age = float(
-                            sample_statistics["sensor_last_ages"][channel]
-                        )
-                        distribution = (
-                            _gaussian_diagnostics(
-                                prediction_z,
-                                target_z,
-                                float(log_scales_z[sample, horizon_index, channel]),
-                                float(data.scaler.std[channel]),
-                            )
-                            if log_scales_z is not None
-                            else {
-                                "log_scale_z": math.nan,
-                                "scale_z": math.nan,
-                                "nll_z": math.nan,
-                                "crps_z": math.nan,
-                                "coverage_90": math.nan,
-                                "coverage_95": math.nan,
-                                "scale": math.nan,
-                                "nll": math.nan,
-                                "crps": math.nan,
-                            }
-                        )
-                        records.append(
-                            ({
-                                "Dataset_ID": data.dataset_id,
-                                "Kind": data.kind,
-                                "Preset": data.preset,
-                                "Seed": seed,
-                                "Model": model_name,
-                                "Ablation": canonical_ablation,
-                                "Example": example_offset + sample,
-                                "Target_Index": horizon_index,
-                                "Horizon": float(horizons[sample, horizon_index]),
-                                "Query_Time": float(absolute_queries[sample, horizon_index]),
-                                "Channel": channel,
-                                "history_events": int(sensor_count),
-                                "sampled_history_events": sampled_sensor_count,
-                                "density": sensor_count / history_duration,
-                                "max_gap": max_gap,
-                                "median_gap": median_gap,
-                                "last_observation_age": last_observation_age,
-                                "global_history_events": int(
-                                    sample_statistics["global_count"]
-                                ),
-                                "global_density": float(
-                                    sample_statistics["global_count"]
-                                ) / history_duration,
-                                "global_max_gap": float(
-                                    sample_statistics["global_max_gap"]
-                                ),
-                                "global_median_gap": float(
-                                    sample_statistics["global_median_gap"]
-                                ),
-                                "global_last_observation_age": float(
-                                    sample_statistics["global_last_age"]
-                                ),
-                                "prediction_z": prediction_z,
-                                "target_z": target_z,
-                                "prediction": prediction,
-                                "target": target,
-                            } | distribution)
-                        )
         example_offset += targets_z.shape[0]
-    return pd.DataFrame.from_records(records)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
 
 def trainer_metrics_from_prediction_rows(rows: pd.DataFrame) -> dict[str, float]:
@@ -1430,27 +1927,98 @@ def _metric_record(group: pd.DataFrame) -> dict[str, float | int]:
     return result
 
 
+@dataclass(frozen=True)
+class _QuantileCacheEntry:
+    identities: np.ndarray
+    values: np.ndarray
+    status: str
+    labels: pd.Series | None
+
+
+def _quantile_labels(
+    group: pd.DataFrame,
+    column: str,
+    *,
+    bins: int,
+    cache: dict[tuple[Any, ...], _QuantileCacheEntry],
+    cache_key: tuple[Any, ...],
+) -> tuple[str, pd.Series | None]:
+    """Calcula ``qcut`` una vez cuando los estratos son invariantes.
+
+    Las ablaciones temporales conservan ejemplos, máscaras y diagnósticos de
+    historia. La comprobación de identidad/valores evita asumir esa invariante
+    para DataFrames externos: si no coincide, se recalcula con la semántica
+    original.
+    """
+
+    identity_columns = ("Example", "Target_Index", "Channel")
+    cacheable = all(name in group.columns for name in identity_columns)
+    identities = (
+        group.loc[:, identity_columns].to_numpy(dtype=np.int64, copy=True)
+        if cacheable
+        else np.empty((0, 3), dtype=np.int64)
+    )
+    values = group[column].to_numpy(dtype=np.float64, copy=True)
+    cached = cache.get(cache_key) if cacheable else None
+    if (
+        cached is not None
+        and np.array_equal(cached.identities, identities)
+        and np.array_equal(cached.values, values, equal_nan=True)
+    ):
+        labels = cached.labels
+        if labels is not None:
+            labels = labels.copy(deep=False)
+            labels.index = group.index
+        return cached.status, labels
+
+    if group[column].nunique(dropna=True) < 2:
+        status, labels = "constant", None
+    else:
+        try:
+            labels = pd.qcut(group[column], q=bins, duplicates="drop")
+            status = "labels"
+        except ValueError:
+            status, labels = "skip", None
+
+    if cacheable and cached is None:
+        cached_labels = labels.reset_index(drop=True) if labels is not None else None
+        cache[cache_key] = _QuantileCacheEntry(
+            identities=identities,
+            values=values,
+            status=status,
+            labels=cached_labels,
+        )
+    return status, labels
+
+
 def summarize_predictions(rows: pd.DataFrame, bins: int = 4) -> pd.DataFrame:
     keys = ["Dataset_ID", "Kind", "Preset", "Seed", "Model", "Ablation"]
     records: list[dict[str, Any]] = []
+    quantile_cache: dict[tuple[Any, ...], _QuantileCacheEntry] = {}
     for key, group in rows.groupby(keys, sort=True):
         base = dict(zip(keys, key))
+        invariant_key = tuple(key[:-1])
         records.append(base | {"Scope": "overall", "Level": "all"} | _metric_record(group))
         for horizon, selected in group.groupby("Horizon", sort=True):
             records.append(base | {"Scope": "horizon", "Level": f"{horizon:g}"} | _metric_record(selected))
         for channel, selected in group.groupby("Channel", sort=True):
             records.append(base | {"Scope": "channel", "Level": str(channel)} | _metric_record(selected))
         for column in ("density", "max_gap", "last_observation_age"):
-            if group[column].nunique(dropna=True) < 2:
+            status, labels = _quantile_labels(
+                group,
+                column,
+                bins=bins,
+                cache=quantile_cache,
+                cache_key=(*invariant_key, "global", column),
+            )
+            if status == "constant":
                 records.append(
                     base
                     | {"Scope": f"{column}_bin", "Level": "constant"}
                     | _metric_record(group)
                 )
                 continue
-            try:
-                labels = pd.qcut(group[column], q=bins, duplicates="drop")
-            except ValueError:
+            if status == "skip" or labels is None:
                 continue
             for interval, selected in group.groupby(labels, observed=True, sort=True):
                 records.append(
@@ -1470,18 +2038,26 @@ def summarize_predictions(rows: pd.DataFrame, bins: int = 4) -> pd.DataFrame:
         for column, scope in channel_strata:
             for channel, channel_group in group.groupby("Channel", sort=True):
                 level_prefix = f"channel={int(channel)}|"
-                if channel_group[column].nunique(dropna=True) < 2:
+                status, labels = _quantile_labels(
+                    channel_group,
+                    column,
+                    bins=bins,
+                    cache=quantile_cache,
+                    cache_key=(
+                        *invariant_key,
+                        "channel",
+                        int(channel),
+                        column,
+                    ),
+                )
+                if status == "constant":
                     records.append(
                         base
                         | {"Scope": scope, "Level": level_prefix + "constant"}
                         | _metric_record(channel_group)
                     )
                     continue
-                try:
-                    labels = pd.qcut(
-                        channel_group[column], q=bins, duplicates="drop"
-                    )
-                except ValueError:
+                if status == "skip" or labels is None:
                     continue
                 for interval, selected in channel_group.groupby(
                     labels, observed=True, sort=True
@@ -1802,6 +2378,7 @@ def run_configuration(
     model_name: str,
     seed: int,
     protocol_seed: int,
+    protocol_index: int | None = None,
     source_paths: Sequence[Path],
 ) -> dict[str, Any]:
     """Configuración completa usada para decidir si un run es reanudable."""
@@ -1836,6 +2413,11 @@ def run_configuration(
             "cache_deterministic_history": args.cache_deterministic_history,
             "max_observation_rows_per_split": args.max_observation_rows_per_split,
             "protocol_seed": protocol_seed,
+            **(
+                {"protocol_index": int(protocol_index)}
+                if protocol_index is not None
+                else {}
+            ),
         },
         "sampling": {
             "max_train_samples": args.max_train_samples,
@@ -2068,28 +2650,192 @@ def invalidate_result_sentinel(run_dir: Path) -> Path | None:
             return archived
 
 
+def _prepared_data_from_metadata(
+    metadata_path: Path,
+    dataset_spec: tuple[str, str, Path, Path],
+    args: argparse.Namespace,
+    *,
+    max_history_events: int,
+) -> PreparedPhysicalData | None:
+    """Reconstruye sólo el contrato necesario para validar una reanudación.
+
+    No se reconstruyen muestras ni se leen columnas Parquet. Los hashes de las
+    fuentes y cada campo derivado se vuelven a incorporar al fingerprint normal
+    de ``run_configuration``; cualquier metadata obsoleta hace fallar el match.
+    """
+    if not metadata_path.is_file():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+
+    kind, preset, observations_path, truth_path = dataset_spec
+    expected_static = {
+        "dataset_id": observations_path.parent.name,
+        "kind": kind,
+        "preset": preset,
+        "horizons": list(args.horizons),
+        "train_horizon_range": [args.train_horizon_min, args.train_horizon_max],
+        "train_horizon_sampling": args.train_horizon_sampling,
+        "queries_per_train_sample": args.queries_per_sample,
+        "history_duration": args.history_duration,
+        "max_history_events": max_history_events,
+        "history_subsampling": args.history_subsampling,
+        "cache_deterministic_history": args.cache_deterministic_history,
+        "observation_row_cap": args.max_observation_rows_per_split,
+        "source_provenance": [
+            file_provenance(observations_path),
+            file_provenance(truth_path),
+        ],
+        "protocol_config": file_provenance(args.config),
+    }
+    if any(payload.get(key) != value for key, value in expected_static.items()):
+        return None
+
+    try:
+        means = np.asarray(payload["scaler_mean"], dtype=np.float64)
+        stds = np.asarray(payload["scaler_std"], dtype=np.float64)
+        row_counts = {
+            split: int(payload["observation_rows"][split]) for split in SPLIT_NAMES
+        }
+        selected_counts = {
+            split: int(
+                payload["forecast_origins"][split]["selected_examples_after_cap"]
+            )
+            for split in SPLIT_NAMES
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        means.ndim != 1
+        or means.size == 0
+        or means.shape != stds.shape
+        or not np.isfinite(means).all()
+        or not np.isfinite(stds).all()
+        or np.any(stds <= 0.0)
+        or any(value <= 0 for value in row_counts.values())
+        or any(value <= 0 for value in selected_counts.values())
+        or (kind == "univariate" and means.size != 1)
+    ):
+        return None
+    return PreparedPhysicalData(
+        train=range(selected_counts["train"]),
+        validation=range(selected_counts["validation"]),
+        test=range(selected_counts["test"]),
+        scaler=ChannelScaler(means, stds),
+        kind=kind,
+        preset=preset,
+        dataset_id=observations_path.parent.name,
+        n_channels=int(means.size),
+        max_history_events=max_history_events,
+        row_counts=row_counts,
+        forecast_origin_audit=None,
+    )
+
+
+def completed_dataset_results_without_preparation(
+    dataset_spec: tuple[str, str, Path, Path],
+    args: argparse.Namespace,
+    *,
+    dataset_dir: Path,
+    protocol_seed: int,
+    protocol_index: int | None = None,
+    max_history_events: int,
+) -> list[dict[str, Any]] | None:
+    """Valida todos los runs de un dataset antes de decodificar sus Parquet."""
+    data = _prepared_data_from_metadata(
+        dataset_dir / "data_metadata.json",
+        dataset_spec,
+        args,
+        max_history_events=max_history_events,
+    )
+    if data is None:
+        return None
+    _, _, observations_path, truth_path = dataset_spec
+    completed: list[dict[str, Any]] = []
+    for seed in args.seeds:
+        for model_name in args.models:
+            run_dir = dataset_dir / f"seed_{seed}" / model_name
+            configuration = run_configuration(
+                data,
+                args,
+                model_name=model_name,
+                seed=seed,
+                protocol_seed=protocol_seed,
+                protocol_index=protocol_index,
+                source_paths=(observations_path, truth_path),
+            )
+            fingerprint = run_configuration_fingerprint(configuration)
+            result = completed_run_result(
+                run_dir,
+                fingerprint,
+                require_predictions=args.save_predictions,
+            )
+            if result is None:
+                return None
+            completed.append(result)
+    return completed
+
+
 def main() -> None:
     parsed = parse_args()
     args = resolve_options(parsed, load_config(parsed.config))
     args.device = _device_name(args.device)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    datasets = discover_datasets(
-        args.data_root,
-        args.kinds,
-        args.presets,
-        args.limit_datasets_per_kind,
-        args.dataset_ids,
-    )
+    exact_selection = bool(args.dataset_units)
+    if exact_selection:
+        scheduled_datasets = [
+            (spec, unit.protocol_index)
+            for unit, spec in discover_exact_datasets(
+                args.data_root, args.dataset_units
+            )
+        ]
+    else:
+        datasets = discover_datasets(
+            args.data_root,
+            args.kinds,
+            args.presets,
+            args.limit_datasets_per_kind,
+            args.dataset_ids,
+        )
+        scheduled_datasets = list(zip(datasets, range(len(datasets))))
     results = []
-    for dataset_index, spec in enumerate(datasets):
+    for display_index, (spec, protocol_index) in enumerate(scheduled_datasets):
         kind, preset, observations_path, truth_path = spec
-        print(f"[{dataset_index + 1}/{len(datasets)}] Preparando {kind}/{preset}/{observations_path.parent.name}")
         max_history_events = (
             args.max_history_events_univariate
             if kind == "univariate"
             else args.max_history_events_multivariate
         )
-        dataset_protocol_seed = args.protocol_seed + dataset_index * 10_000
+        dataset_protocol_seed = args.protocol_seed + protocol_index * 10_000
+        dataset_dir = args.output_dir / kind / preset / observations_path.parent.name
+        if not args.force_rerun:
+            resumed = completed_dataset_results_without_preparation(
+                spec,
+                args,
+                dataset_dir=dataset_dir,
+                protocol_seed=dataset_protocol_seed,
+                protocol_index=protocol_index if exact_selection else None,
+                max_history_events=max_history_events,
+            )
+            if resumed is not None:
+                print(
+                    f"[{display_index + 1}/{len(scheduled_datasets)}] "
+                    f"{kind}/{preset}/{observations_path.parent.name}: "
+                    "todos los runs son compatibles; se omite preparación Parquet"
+                )
+                results.extend(resumed)
+                pd.DataFrame(results).to_csv(
+                    args.output_dir / "benchmark_physical_models.csv", index=False
+                )
+                continue
+        print(
+            f"[{display_index + 1}/{len(scheduled_datasets)}] Preparando "
+            f"{kind}/{preset}/{observations_path.parent.name}"
+        )
         data = prepare_physical_data(
             spec,
             horizons=args.horizons,
@@ -2126,6 +2872,10 @@ def main() -> None:
                     "max_history_events": max_history_events,
                     "history_subsampling": args.history_subsampling,
                     "cache_deterministic_history": args.cache_deterministic_history,
+                    "protocol_index": (
+                        int(protocol_index) if exact_selection else None
+                    ),
+                    "protocol_seed": int(dataset_protocol_seed),
                     "observation_rows": data.row_counts,
                     "observation_row_cap": args.max_observation_rows_per_split,
                     "forecast_origins": data.forecast_origin_audit,
@@ -2152,6 +2902,7 @@ def main() -> None:
                     model_name=model_name,
                     seed=seed,
                     protocol_seed=dataset_protocol_seed,
+                    protocol_index=protocol_index if exact_selection else None,
                     source_paths=(observations_path, truth_path),
                 )
                 fingerprint = run_configuration_fingerprint(configuration)

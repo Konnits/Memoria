@@ -23,9 +23,12 @@ import json
 import math
 import os
 import platform
+import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+import time
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -89,6 +92,8 @@ class DatasetUnit:
     preset: str
     dataset_id: str
     generator_seed: int
+    protocol_index: int
+    shard: int
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -101,6 +106,9 @@ class CommandSpec:
     protocol: str
     command: tuple[str, ...]
     output_dir: Path
+    shard: int | None = None
+    stdout_log: Path | None = None
+    stderr_log: Path | None = None
 
 
 def _repository_path(value: str | Path) -> Path:
@@ -130,22 +138,42 @@ def cohort_units(config: Mapping[str, Any], cohort: str) -> tuple[DatasetUnit, .
             preset=str(item["preset"]),
             dataset_id=str(item["dataset_id"]),
             generator_seed=generator_seed,
+            protocol_index=int(item["protocol_index"]),
+            shard=int(item["shard"]),
         )
         for item in section["units"]
     )
 
 
+def physical_process_count(config: Mapping[str, Any]) -> int:
+    value = int(config.get("execution", {}).get("parallel_physical_processes", 0))
+    if value < 1:
+        raise ProtocolError("parallel_physical_processes debe ser >= 1.")
+    return value
+
+
+def cohort_shards(config: Mapping[str, Any], cohort: str) -> tuple[int, ...]:
+    shards = tuple(sorted({unit.shard for unit in cohort_units(config, cohort)}))
+    if shards != tuple(range(len(shards))):
+        raise ProtocolError(f"{cohort}: los shards deben ser contiguos desde 0.")
+    return shards
+
+
 def validate_final_config(config: Mapping[str, Any]) -> None:
-    if config.get("protocol_status") != "thesis_physical_evaluation_v1_frozen":
-        raise ProtocolError("El protocolo final debe estar congelado como evaluación física.")
+    if config.get("protocol_status") != "thesis_physical_evaluation_v2_frozen":
+        raise ProtocolError("El protocolo v2 debe estar congelado como evaluación física.")
+    if Path(str(config.get("output_dir", ""))).as_posix() != (
+        "experiments/thesis_physical_benchmark_v2"
+    ):
+        raise ProtocolError("El protocolo v2 exige su output root nuevo y aislado.")
     claim_boundary = str(config.get("claim_boundary", ""))
     if "retrospective" not in claim_boundary or "not_external_validation" not in claim_boundary:
         raise ProtocolError("Falta el límite retrospectivo/no externo de las conclusiones.")
     seeds = tuple(int(value) for value in config.get("training", {}).get("seeds", ()))
     if seeds != EXPECTED_SEEDS:
         raise ProtocolError(f"Las seeds finales deben ser exactamente {EXPECTED_SEEDS}.")
-    if not bool(config.get("training", {}).get("deterministic", False)):
-        raise ProtocolError("El benchmark final debe declarar deterministic: true.")
+    if config.get("training", {}).get("deterministic") is not False:
+        raise ProtocolError("El protocolo v2 exige deterministic: false.")
     if int(config["training"].get("batch_size", -1)) != 32:
         raise ProtocolError("El batch_size final congelado debe ser 32.")
     if str(config["training"].get("device")) != "cuda":
@@ -172,6 +200,9 @@ def validate_final_config(config: Mapping[str, Any]) -> None:
         )
     if int(config.get("execution", {}).get("num_workers_required", -1)) != 0:
         raise ProtocolError("execution.num_workers_required debe ser 0.")
+    configured_processes = physical_process_count(config)
+    if config.get("execution", {}).get("fast_kernels") is not True:
+        raise ProtocolError("El protocolo v2 exige fast_kernels: true.")
     preflight = config.get("preflight", {})
     if (
         preflight.get("required_conda_environment") != "memoria"
@@ -201,6 +232,25 @@ def validate_final_config(config: Mapping[str, Any]) -> None:
             )
         if len({unit.key for unit in units}) != len(units):
             raise ProtocolError(f"{cohort} contiene unidades duplicadas.")
+        ordered_by_protocol = tuple(
+            unit.key for unit in sorted(units, key=lambda item: item.protocol_index)
+        )
+        if tuple(sorted(unit.protocol_index for unit in units)) != tuple(
+            range(expected_count)
+        ):
+            raise ProtocolError(
+                f"{cohort} debe declarar protocol_index 0..{expected_count - 1}."
+            )
+        if ordered_by_protocol != tuple(sorted(unit.key for unit in units)):
+            raise ProtocolError(
+                f"{cohort}: protocol_index debe conservar exactamente el orden v1."
+            )
+        shards = cohort_shards(config, cohort)
+        expected_processes = min(configured_processes, expected_count)
+        if len(shards) != expected_processes:
+            raise ProtocolError(
+                f"{cohort} debe usar {expected_processes} shards no vacíos."
+            )
         for preset in sorted({unit.preset for unit in units}):
             kinds = {unit.kind for unit in units if unit.preset == preset}
             if kinds != {"univariate", "multivariate"}:
@@ -479,6 +529,8 @@ def preflight_manifest(
                     "preset": unit.preset,
                     "dataset_id": unit.dataset_id,
                     "generator_seed": unit.generator_seed,
+                    "protocol_index": unit.protocol_index,
+                    "shard": unit.shard,
                     "generator_seed_source": "thesis_physical_final.yaml",
                     "observations_columns": _validate_parquet_contract(
                         paths["observations"], observation_required
@@ -497,6 +549,7 @@ def preflight_manifest(
     manifest = {
         "schema_version": 1,
         "status": "preflight_passed",
+        "protocol_status": config["protocol_status"],
         "config": _source_record(config_path, hash_files),
         "implementation": [
             _source_record(path, hash_files) for path in implementation_paths()
@@ -508,7 +561,9 @@ def preflight_manifest(
         "seeds": list(EXPECTED_SEEDS),
         "models": list(config["models"]),
         "timestamp_ablations": list(config["evaluation"]["timestamp_ablations"]),
-        "deterministic": True,
+        "deterministic": False,
+        "fast_kernels": True,
+        "parallel_physical_processes": physical_process_count(config),
         "runtime": runtime,
         "dataset_generator_provenance": {
             "main": {"generator_seed": 2026, "dataset_id_rule": "<preset>_0000"},
@@ -579,10 +634,12 @@ def require_compatible_preflight(
         manifest.get("cohorts", ())
     ) != set(cohorts):
         raise ProtocolError("El preflight no corresponde a las cohortes solicitadas.")
+    if manifest.get("protocol_status") != config.get("protocol_status"):
+        raise ProtocolError("El preflight no corresponde al protocolo v2 congelado.")
     if Path(str(manifest.get("output_root", ""))).resolve() != root.resolve():
         raise ProtocolError("El output root no coincide con el preflight.")
     expected_units = {
-        (cohort, *unit.key)
+        (cohort, *unit.key, unit.protocol_index, unit.shard)
         for cohort in cohorts
         for unit in cohort_units(config, cohort)
     }
@@ -592,11 +649,20 @@ def require_compatible_preflight(
             str(item.get("kind")),
             str(item.get("preset")),
             str(item.get("dataset_id")),
+            int(item.get("protocol_index", -1)),
+            int(item.get("shard", -1)),
         )
         for item in manifest.get("datasets", ())
     }
     if recorded_units != expected_units:
         raise ProtocolError("La selección de datasets cambió desde el preflight.")
+    if (
+        manifest.get("deterministic") is not False
+        or manifest.get("fast_kernels") is not True
+        or int(manifest.get("parallel_physical_processes", -1))
+        != physical_process_count(config)
+    ):
+        raise ProtocolError("El preflight no corresponde al protocolo acelerado v2.")
     runtime = manifest.get("runtime", {})
     if not bool(runtime.get("strict", False)):
         raise ProtocolError("El run final requiere un preflight estricto.")
@@ -642,6 +708,95 @@ def _selection_arguments(units: Sequence[DatasetUnit]) -> list[str]:
     ]
 
 
+def _exact_physical_selection_arguments(units: Sequence[DatasetUnit]) -> list[str]:
+    arguments: list[str] = []
+    for unit in sorted(units, key=lambda item: item.protocol_index):
+        arguments.extend(
+            [
+                "--dataset-unit",
+                ":".join(
+                    (
+                        unit.kind,
+                        unit.preset,
+                        unit.dataset_id,
+                        str(unit.protocol_index),
+                    )
+                ),
+            ]
+        )
+    return arguments
+
+
+def _physical_command_spec(
+    *,
+    config: Mapping[str, Any],
+    cohort: str,
+    units: Sequence[DatasetUnit],
+    output_dir: Path,
+    logs_dir: Path,
+    models: Sequence[str],
+    smoke: bool,
+) -> CommandSpec:
+    if not units or len({unit.shard for unit in units}) != 1:
+        raise ProtocolError("Cada comando físico debe contener un único shard no vacío.")
+    shard = units[0].shard
+    command = [
+        sys.executable,
+        str(PHYSICAL_SCRIPT),
+        "--config",
+        str(Path(config["_config_path"])),
+        "--data-root",
+        str(data_root(config)),
+        "--output-dir",
+        str(output_dir),
+        *_exact_physical_selection_arguments(units),
+        "--models",
+        *models,
+        "--seeds",
+    ]
+    if smoke:
+        smoke_cfg = config["smoke"]
+        command.extend(str(value) for value in smoke_cfg["seeds"])
+        command.extend(
+            [
+                "--epochs",
+                str(smoke_cfg["epochs"]),
+                "--max-train-samples",
+                str(smoke_cfg["max_train_samples"]),
+                "--max-val-samples",
+                str(smoke_cfg["max_val_samples"]),
+                "--max-test-samples",
+                str(smoke_cfg["max_test_samples"]),
+                "--max-observation-rows-per-split",
+                str(smoke_cfg["max_observation_rows_per_split"]),
+            ]
+        )
+    else:
+        command.extend(str(value) for value in EXPECTED_SEEDS)
+    command.extend(
+        [
+            "--batch-size",
+            "32",
+            "--device",
+            "cuda",
+            "--num-workers",
+            "0",
+            "--non-deterministic",
+        ]
+    )
+    if smoke:
+        command.append("--force-rerun")
+    return CommandSpec(
+        cohort=cohort,
+        protocol="physical_models",
+        command=tuple(command),
+        output_dir=output_dir,
+        shard=shard,
+        stdout_log=logs_dir / f"physical_models_shard_{shard}.stdout.log",
+        stderr_log=logs_dir / f"physical_models_shard_{shard}.stderr.log",
+    )
+
+
 def build_run_commands(
     config: Mapping[str, Any],
     *,
@@ -650,7 +805,6 @@ def build_run_commands(
     include_identifiability: bool = True,
     smoke: bool = False,
 ) -> list[CommandSpec]:
-    config_path = Path(config["_config_path"])
     data_directory = data_root(config)
     models = [str(value) for value in config["models"]]
     commands: list[CommandSpec] = []
@@ -659,46 +813,35 @@ def build_run_commands(
         smoke_cfg = config["smoke"]
         cohort = str(smoke_cfg["cohort"])
         allowed_presets = set(smoke_cfg["presets"])
-        units = tuple(
+        selected_units = tuple(
             unit for unit in cohort_units(config, cohort) if unit.preset in allowed_presets
         )
-        if not units:
+        if not selected_units:
             raise ProtocolError("La selección smoke quedó vacía.")
-        physical_output = root / "smoke" / "physical_models"
-        physical = [
-            sys.executable,
-            str(PHYSICAL_SCRIPT),
-            "--config",
-            str(config_path),
-            "--data-root",
-            str(data_directory),
-            "--output-dir",
-            str(physical_output),
-            *_selection_arguments(units),
-            "--models",
-            *models,
-            "--seeds",
-            *(str(value) for value in smoke_cfg["seeds"]),
-            "--epochs",
-            str(smoke_cfg["epochs"]),
-            "--max-train-samples",
-            str(smoke_cfg["max_train_samples"]),
-            "--max-val-samples",
-            str(smoke_cfg["max_val_samples"]),
-            "--max-test-samples",
-            str(smoke_cfg["max_test_samples"]),
-            "--max-observation-rows-per-split",
-            str(smoke_cfg["max_observation_rows_per_split"]),
-            "--batch-size",
-            "32",
-            "--device",
-            "cuda",
-            "--num-workers",
-            "0",
-            "--deterministic",
-            "--force-rerun",
-        ]
-        commands.append(CommandSpec("smoke", "physical_models", tuple(physical), physical_output))
+        smoke_processes = min(physical_process_count(config), len(selected_units))
+        units = tuple(
+            replace(unit, shard=index % smoke_processes)
+            for index, unit in enumerate(
+                sorted(selected_units, key=lambda item: item.protocol_index)
+            )
+        )
+        smoke_root = root / "smoke"
+        logs_dir = smoke_root / "logs"
+        for shard in sorted({unit.shard for unit in units}):
+            shard_units = tuple(unit for unit in units if unit.shard == shard)
+            commands.append(
+                _physical_command_spec(
+                    config=config,
+                    cohort="smoke",
+                    units=shard_units,
+                    output_dir=(
+                        smoke_root / "physical_model_shards" / f"shard_{shard}"
+                    ),
+                    logs_dir=logs_dir,
+                    models=models,
+                    smoke=True,
+                )
+            )
         if include_identifiability and bool(config["identifiability"].get("enabled", True)):
             temporal_output = root / "smoke" / "temporal_identifiability"
             temporal = [
@@ -724,30 +867,22 @@ def build_run_commands(
     for cohort in cohorts:
         units = cohort_units(config, cohort)
         cohort_dir = cohort_output_dir(config, cohort, root)
-        physical_output = cohort_dir / "physical_models"
-        physical = [
-            sys.executable,
-            str(PHYSICAL_SCRIPT),
-            "--config",
-            str(config_path),
-            "--data-root",
-            str(data_directory),
-            "--output-dir",
-            str(physical_output),
-            *_selection_arguments(units),
-            "--models",
-            *models,
-            "--seeds",
-            *(str(value) for value in EXPECTED_SEEDS),
-            "--batch-size",
-            "32",
-            "--device",
-            "cuda",
-            "--num-workers",
-            "0",
-            "--deterministic",
-        ]
-        commands.append(CommandSpec(cohort, "physical_models", tuple(physical), physical_output))
+        logs_dir = cohort_dir / "logs"
+        for shard in cohort_shards(config, cohort):
+            shard_units = tuple(unit for unit in units if unit.shard == shard)
+            commands.append(
+                _physical_command_spec(
+                    config=config,
+                    cohort=cohort,
+                    units=shard_units,
+                    output_dir=(
+                        cohort_dir / "physical_model_shards" / f"shard_{shard}"
+                    ),
+                    logs_dir=logs_dir,
+                    models=models,
+                    smoke=False,
+                )
+            )
         if include_identifiability and bool(config["identifiability"].get("enabled", True)):
             temporal_output = cohort_dir / "temporal_identifiability"
             temporal = [
@@ -771,19 +906,189 @@ def command_text(command: Sequence[str]) -> str:
     return subprocess.list2cmdline(list(command))
 
 
+def _log_tail(path: Path | None, lines: int = 20) -> str:
+    if path is None or not path.is_file():
+        return ""
+    try:
+        return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    except OSError:
+        return ""
+
+
+def _terminate_active_processes(
+    processes: Sequence[tuple[CommandSpec, subprocess.Popen[Any]]],
+) -> None:
+    """Detiene y recolecta hijos activos sin tocar los que ya terminaron."""
+    active: list[subprocess.Popen[Any]] = []
+    for _, process in processes:
+        try:
+            returncode = process.poll()
+        except BaseException:
+            returncode = None
+        if returncode is not None:
+            continue
+        active.append(process)
+        try:
+            process.terminate()
+        except BaseException:
+            # Otro hilo/señal puede haber terminado el hijo entre poll y terminate.
+            pass
+    for process in active:
+        try:
+            process.wait(timeout=10)
+            continue
+        except BaseException:
+            pass
+        try:
+            process.kill()
+        except BaseException:
+            pass
+        try:
+            process.wait(timeout=10)
+        except BaseException:
+            pass
+
+
+def _execute_parallel_physical(
+    specs: Sequence[CommandSpec],
+    *,
+    heartbeat_interval_s: float = 30.0,
+    poll_interval_s: float = 0.5,
+) -> None:
+    expected_shards = set(range(len(specs)))
+    if (
+        not specs
+        or {spec.shard for spec in specs} != expected_shards
+        or len({spec.cohort for spec in specs}) != 1
+    ):
+        raise ProtocolError("Cada cohorte física debe lanzar shards contiguos no vacíos.")
+    cohort = specs[0].cohort
+    if heartbeat_interval_s <= 0 or poll_interval_s <= 0:
+        raise ValueError("Los intervalos de polling/heartbeat deben ser > 0.")
+    processes: list[tuple[CommandSpec, subprocess.Popen[Any]]] = []
+    environment = os.environ.copy()
+    environment["PYTHONUNBUFFERED"] = "1"
+    with ExitStack() as stack:
+        try:
+            for spec in sorted(specs, key=lambda item: int(item.shard or 0)):
+                if spec.stdout_log is None or spec.stderr_log is None:
+                    raise ProtocolError("Cada shard físico debe declarar logs separados.")
+                spec.stdout_log.parent.mkdir(parents=True, exist_ok=True)
+                stdout = stack.enter_context(
+                    spec.stdout_log.open("w", encoding="utf-8", newline="\n")
+                )
+                stderr = stack.enter_context(
+                    spec.stderr_log.open("w", encoding="utf-8", newline="\n")
+                )
+                print(
+                    f"[{cohort}/physical_models/shard_{spec.shard}] "
+                    f"{command_text(spec.command)}",
+                    flush=True,
+                )
+                processes.append(
+                    (
+                        spec,
+                        subprocess.Popen(
+                            spec.command,
+                            cwd=REPOSITORY_ROOT,
+                            stdout=stdout,
+                            stderr=stderr,
+                            env=environment,
+                        ),
+                    )
+                )
+        except BaseException:
+            _terminate_active_processes(processes)
+            raise
+        failures: list[str] = []
+        pending = {int(spec.shard): (spec, process) for spec, process in processes}
+        completed_shards: list[int] = []
+        next_heartbeat = time.monotonic() + heartbeat_interval_s
+        try:
+            while pending:
+                for shard, (spec, process) in list(pending.items()):
+                    returncode = process.poll()
+                    if returncode is None:
+                        continue
+                    process.wait()
+                    completed_shards.append(shard)
+                    del pending[shard]
+                    print(
+                        f"[{cohort}/physical_models/shard_{shard}] terminado "
+                        f"(returncode={returncode}); logs: "
+                        f"{spec.stdout_log}, {spec.stderr_log}",
+                        flush=True,
+                    )
+                    if returncode != 0:
+                        failures.append(
+                            f"shard_{shard} terminó con {returncode}; stderr:\n"
+                            + _log_tail(spec.stderr_log)
+                        )
+                if not pending:
+                    break
+                now = time.monotonic()
+                if now >= next_heartbeat:
+                    active = ",".join(f"shard_{value}" for value in sorted(pending))
+                    complete = (
+                        ",".join(
+                            f"shard_{value}" for value in sorted(completed_shards)
+                        )
+                        or "-"
+                    )
+                    log_paths = "; ".join(
+                        f"shard_{shard}: {spec.stdout_log} | {spec.stderr_log}"
+                        for shard, (spec, _) in sorted(pending.items())
+                    )
+                    print(
+                        f"[{cohort}/physical_models] heartbeat: activos={active}; "
+                        f"completos={complete}; logs={log_paths}",
+                        flush=True,
+                    )
+                    next_heartbeat = now + heartbeat_interval_s
+                time.sleep(poll_interval_s)
+        except BaseException:
+            _terminate_active_processes(tuple(pending.values()))
+            raise
+    if failures:
+        raise ProtocolError(
+            f"{cohort}: falló al menos un shard físico; no se consolida ni publica.\n"
+            + "\n".join(failures)
+        )
+
+
 def execute_commands(commands: Sequence[CommandSpec]) -> None:
-    for index, spec in enumerate(commands, start=1):
-        print(f"[{index}/{len(commands)}] {spec.cohort}/{spec.protocol}", flush=True)
+    index = 0
+    while index < len(commands):
+        spec = commands[index]
+        if spec.protocol == "physical_models":
+            physical: list[CommandSpec] = []
+            while (
+                index < len(commands)
+                and commands[index].protocol == "physical_models"
+                and commands[index].cohort == spec.cohort
+            ):
+                physical.append(commands[index])
+                index += 1
+            _execute_parallel_physical(physical)
+            continue
+        print(f"[{spec.cohort}/{spec.protocol}]", flush=True)
         print(command_text(spec.command), flush=True)
         subprocess.run(spec.command, cwd=REPOSITORY_ROOT, check=True)
+        index += 1
 
 
 def _expected_result_keys(
     config: Mapping[str, Any], cohort: str
 ) -> set[tuple[str, str, str, int, str]]:
+    return _expected_result_keys_for_units(config, cohort_units(config, cohort))
+
+
+def _expected_result_keys_for_units(
+    config: Mapping[str, Any], units: Sequence[DatasetUnit]
+) -> set[tuple[str, str, str, int, str]]:
     return {
         (unit.kind, unit.preset, unit.dataset_id, seed, str(model))
-        for unit in cohort_units(config, cohort)
+        for unit in units
         for seed in EXPECTED_SEEDS
         for model in config["models"]
     }
@@ -802,10 +1107,16 @@ def _verify_run_against_preflight(
 ) -> None:
     frozen_task = config["task"]
     actual_task = run_configuration.get("task", {})
-    ordered_units = sorted(cohort_units(config, cohort))
-    unit_index = [unit.key for unit in ordered_units].index(
-        (kind, preset, dataset_id)
+    unit = next(
+        (
+            candidate
+            for candidate in cohort_units(config, cohort)
+            if candidate.key == (kind, preset, dataset_id)
+        ),
+        None,
     )
+    if unit is None:
+        raise ProtocolError("El run no pertenece a una unidad congelada.")
     expected_task = {
         "horizons": list(frozen_task["horizons"]),
         "train_horizon_range": list(frozen_task["train_horizon_range"]),
@@ -823,7 +1134,8 @@ def _verify_run_against_preflight(
         "cache_deterministic_history": True,
         "max_observation_rows_per_split": None,
         "protocol_seed": int(config["sampling"]["protocol_seed"])
-        + unit_index * 10_000,
+        + unit.protocol_index * 10_000,
+        "protocol_index": unit.protocol_index,
     }
     for key, expected in expected_task.items():
         observed = actual_task.get(key)
@@ -854,7 +1166,7 @@ def _verify_run_against_preflight(
         "early_stopping_patience": int(frozen_training["early_stopping_patience"]),
         "restore_best_weights": True,
         "use_amp": True,
-        "enable_cuda_runtime_optimizations": False,
+        "enable_cuda_runtime_optimizations": True,
     }
     if any(actual_training.get(key) != value for key, value in expected_training.items()):
         raise ProtocolError("Configuración de entrenamiento efectiva no congelada.")
@@ -942,7 +1254,7 @@ def _verify_run_against_preflight(
         "validate_only": False,
         "device": "cuda",
         "checkpoints": True,
-        "deterministic": True,
+        "deterministic": False,
     }
     if any(evaluation.get(key) != value for key, value in expected_evaluation.items()):
         raise ProtocolError("Ejecución/evaluación efectiva no es la final congelada.")
@@ -956,15 +1268,15 @@ def _verify_run_against_preflight(
             raise ProtocolError(f"{model}: checkpoint no usa {expected_metric}.")
 
 
-def audit_physical_completion(
+def _audit_physical_root(
     config: Mapping[str, Any],
     cohort: str,
-    root: Path,
+    physical_root: Path,
     *,
     preflight: Mapping[str, Any],
+    expected: set[tuple[str, str, str, int, str]],
+    label: str,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    physical_root = cohort_output_dir(config, cohort, root) / "physical_models"
-    expected = _expected_result_keys(config, cohort)
     rows: list[dict[str, Any]] = []
     failures: list[str] = []
     for kind, preset, dataset_id, seed, model in sorted(expected):
@@ -1013,7 +1325,8 @@ def audit_physical_completion(
     if failures:
         preview = "\n".join(failures[:20])
         raise ProtocolError(
-            f"{cohort}: {len(failures)} runs incompletos de {len(expected)}.\n{preview}"
+            f"{cohort}/{label}: {len(failures)} runs incompletos "
+            f"de {len(expected)}.\n{preview}"
         )
 
     frame = pd.DataFrame(rows)
@@ -1022,7 +1335,7 @@ def audit_physical_completion(
         for row in frame.itertuples()
     }
     if actual != expected or len(frame) != len(expected):
-        raise ProtocolError(f"{cohort}: el conjunto de resultados no es exacto.")
+        raise ProtocolError(f"{cohort}/{label}: resultados no exactos.")
     summary_path = physical_root / "benchmark_physical_models.csv"
     if not summary_path.is_file():
         raise ProtocolError(f"Falta resumen consolidado: {summary_path}")
@@ -1032,7 +1345,9 @@ def audit_physical_completion(
         for row in summary.itertuples()
     }
     if summary_keys != expected or len(summary) != len(expected):
-        raise ProtocolError(f"{cohort}: benchmark_physical_models.csv no es exacto.")
+        raise ProtocolError(
+            f"{cohort}/{label}: benchmark_physical_models.csv no es exacto."
+        )
     return frame, {
         "cohort": cohort,
         "expected_runs": len(expected),
@@ -1040,6 +1355,206 @@ def audit_physical_completion(
         "complete": True,
         "summary": file_provenance(summary_path),
     }
+
+
+def _verify_shard_manifest(
+    config: Mapping[str, Any],
+    cohort: str,
+    physical_root: Path,
+    *,
+    preflight: Mapping[str, Any],
+) -> dict[str, Any]:
+    path = physical_root / "shard_manifest.json"
+    if not path.is_file():
+        raise ProtocolError(f"Falta publicación v2 de shards: {path}")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProtocolError(f"Manifest de shards inválido: {path}") from exc
+    fingerprint = manifest.get("manifest_fingerprint")
+    payload = dict(manifest)
+    payload.pop("manifest_fingerprint", None)
+    if fingerprint != _mapping_sha256(payload):
+        raise ProtocolError(f"Manifest de shards modificado o truncado: {path}")
+    expected_units = {
+        (unit.kind, unit.preset, unit.dataset_id, unit.protocol_index, unit.shard)
+        for unit in cohort_units(config, cohort)
+    }
+    observed_units = {
+        (
+            str(item.get("kind")),
+            str(item.get("preset")),
+            str(item.get("dataset_id")),
+            int(item.get("protocol_index", -1)),
+            int(item.get("shard", -1)),
+        )
+        for item in manifest.get("units", ())
+    }
+    if (
+        manifest.get("schema_version") != 2
+        or manifest.get("status") != "complete"
+        or manifest.get("cohort") != cohort
+        or int(manifest.get("parallel_physical_processes", -1))
+        != len(cohort_shards(config, cohort))
+        or observed_units != expected_units
+        or manifest.get("preflight_fingerprint")
+        != preflight.get("manifest_fingerprint")
+        or manifest.get("config_sha256") != preflight.get("config", {}).get("sha256")
+    ):
+        raise ProtocolError(f"Manifest de shards incompatible con v2: {path}")
+    return manifest
+
+
+def audit_physical_completion(
+    config: Mapping[str, Any],
+    cohort: str,
+    root: Path,
+    *,
+    preflight: Mapping[str, Any],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    physical_root = cohort_output_dir(config, cohort, root) / "physical_models"
+    frame, completion = _audit_physical_root(
+        config,
+        cohort,
+        physical_root,
+        preflight=preflight,
+        expected=_expected_result_keys(config, cohort),
+        label="physical_models",
+    )
+    completion["shards"] = _verify_shard_manifest(
+        config, cohort, physical_root, preflight=preflight
+    )
+    return frame, completion
+
+
+def _hardlink_or_copy(source: str, destination: str) -> str:
+    try:
+        os.link(source, destination)
+        return destination
+    except OSError:
+        return shutil.copy2(source, destination)
+
+
+def consolidate_physical_shards(
+    config: Mapping[str, Any],
+    cohort: str,
+    root: Path,
+    *,
+    preflight: Mapping[str, Any],
+) -> Path:
+    """Valida todos los shards y publica una vista unificada de forma atómica."""
+    cohort_dir = cohort_output_dir(config, cohort, root)
+    shard_base = cohort_dir / "physical_model_shards"
+    shard_frames: list[pd.DataFrame] = []
+    shard_records: list[dict[str, Any]] = []
+    for shard in cohort_shards(config, cohort):
+        units = tuple(unit for unit in cohort_units(config, cohort) if unit.shard == shard)
+        shard_root = shard_base / f"shard_{shard}"
+        frame, completion = _audit_physical_root(
+            config,
+            cohort,
+            shard_root,
+            preflight=preflight,
+            expected=_expected_result_keys_for_units(config, units),
+            label=f"shard_{shard}",
+        )
+        shard_frames.append(frame)
+        shard_records.append(
+            {
+                "shard": shard,
+                "output_dir": str(shard_root.resolve()),
+                "summary": completion["summary"],
+                "expected_runs": completion["expected_runs"],
+            }
+        )
+
+    manifest: dict[str, Any] = {
+        "schema_version": 2,
+        "status": "complete",
+        "cohort": cohort,
+        "parallel_physical_processes": len(cohort_shards(config, cohort)),
+        "preflight_fingerprint": preflight.get("manifest_fingerprint"),
+        "config_sha256": preflight.get("config", {}).get("sha256"),
+        "units": [
+            {
+                "kind": unit.kind,
+                "preset": unit.preset,
+                "dataset_id": unit.dataset_id,
+                "protocol_index": unit.protocol_index,
+                "shard": unit.shard,
+            }
+            for unit in sorted(
+                cohort_units(config, cohort), key=lambda item: item.protocol_index
+            )
+        ],
+        "shards": shard_records,
+    }
+    manifest["manifest_fingerprint"] = _mapping_sha256(manifest)
+
+    physical_root = cohort_dir / "physical_models"
+    if physical_root.is_dir():
+        try:
+            _audit_physical_root(
+                config,
+                cohort,
+                physical_root,
+                preflight=preflight,
+                expected=_expected_result_keys(config, cohort),
+                label="physical_models",
+            )
+            existing = _verify_shard_manifest(
+                config, cohort, physical_root, preflight=preflight
+            )
+            if existing.get("manifest_fingerprint") == manifest["manifest_fingerprint"]:
+                return physical_root
+        except ProtocolError:
+            pass
+
+    staging = cohort_dir / f".physical_models.staging.{os.getpid()}.{time.time_ns()}"
+    staging.mkdir(parents=True, exist_ok=False)
+    try:
+        for unit in cohort_units(config, cohort):
+            source = (
+                shard_base
+                / f"shard_{unit.shard}"
+                / unit.kind
+                / unit.preset
+                / unit.dataset_id
+            )
+            destination = staging / unit.kind / unit.preset / unit.dataset_id
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination, copy_function=_hardlink_or_copy)
+        merged = pd.concat(shard_frames, ignore_index=True).drop(
+            columns=["Cohort"], errors="ignore"
+        )
+        merged = merged.sort_values(
+            ["Kind", "Preset", "Dataset_ID", "Seed", "test_rmse_z", "Model"]
+        )
+        merged.to_csv(staging / "benchmark_physical_models.csv", index=False)
+        atomic_write_json(staging / "shard_manifest.json", manifest)
+        _audit_physical_root(
+            config,
+            cohort,
+            staging,
+            preflight=preflight,
+            expected=_expected_result_keys(config, cohort),
+            label="staging",
+        )
+
+        stale: Path | None = None
+        if physical_root.exists():
+            stale = cohort_dir / f"physical_models.stale.{time.time_ns()}"
+            physical_root.replace(stale)
+        try:
+            staging.replace(physical_root)
+        except BaseException:
+            if stale is not None and stale.exists() and not physical_root.exists():
+                stale.replace(physical_root)
+            raise
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return physical_root
 
 
 def audit_identifiability_completion(
@@ -1697,6 +2212,8 @@ def generate_report(
     manifest = {
         "schema_version": 1,
         "status": "complete",
+        "protocol_status": config["protocol_status"],
+        "parallel_physical_processes": physical_process_count(config),
         "config": file_provenance(Path(config["_config_path"])),
         "aggregation_order": list(config["reporting"]["aggregation_order"]),
         "completion": completion_records,
@@ -1809,7 +2326,7 @@ def main() -> None:
             return
 
     if args.command in {"run", "all"}:
-        require_compatible_preflight(config, root=root, cohorts=cohorts)
+        preflight = require_compatible_preflight(config, root=root, cohorts=cohorts)
         execute_commands(
             build_run_commands(
                 config,
@@ -1818,8 +2335,16 @@ def main() -> None:
                 include_identifiability=include_identifiability,
             )
         )
+        for cohort in cohorts:
+            published = consolidate_physical_shards(
+                config, cohort, root, preflight=preflight
+            )
+            print(f"Publicación física consolidada: {published}")
         if args.command == "run":
-            print("Runs terminados. Ejecute el subcomando report para consolidar.")
+            print(
+                "Runs y shards físicos publicados. Ejecute el subcomando report "
+                "para generar los agregados finales."
+            )
             return
 
     if args.command in {"report", "all"}:

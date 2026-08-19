@@ -1156,6 +1156,16 @@ class EventTimeSeriesDataset(_TemporalTargetMixin, Dataset):
         self._event_history_cache_enabled = bool(
             self._history_cache_enabled and self.event_sensor_ids is not None
         )
+        # Los diagnósticos exactos de test se calculan sobre ventanas previas al
+        # subsampling. Preindexar una vez las filas de cada sensor evita volver
+        # a enmascarar toda la ventana (potencialmente cientos de miles de
+        # eventos) una vez por sensor y forecast origin.
+        self._sensor_event_rows: Tuple[torch.Tensor, ...] = ()
+        if self.event_sensor_ids is not None and self.config.compute_history_diagnostics:
+            self._sensor_event_rows = tuple(
+                torch.where(self.event_sensor_ids == sensor)[0]
+                for sensor in range(self.input_dim)
+            )
         self._example_indices = self._build_example_indices()
 
     def _build_example_indices(self) -> Union[range, torch.Tensor]:
@@ -1173,10 +1183,17 @@ class EventTimeSeriesDataset(_TemporalTargetMixin, Dataset):
         if count <= limit:
             return torch.arange(count, dtype=torch.long)
 
-        mandatory: set[int] = set()
-        for sensor in torch.unique(event_sensor_ids).tolist():
-            positions = torch.where(event_sensor_ids == int(sensor))[0]
-            mandatory.add(int(positions[-1].item()))
+        # Un único reduce reemplaza un scan completo de la ventana por sensor.
+        positions = torch.arange(count, dtype=torch.long)
+        last_by_sensor = torch.full((self.input_dim,), -1, dtype=torch.long)
+        last_by_sensor.scatter_reduce_(
+            0,
+            event_sensor_ids,
+            positions,
+            reduce="amax",
+            include_self=True,
+        )
+        mandatory = set(last_by_sensor[last_by_sensor >= 0].tolist())
         if len(mandatory) > limit:
             raise ValueError(
                 "El límite de historia no permite retener un evento por sensor."
@@ -1216,10 +1233,22 @@ class EventTimeSeriesDataset(_TemporalTargetMixin, Dataset):
         event_timestamps: torch.Tensor,
         event_sensor_ids: torch.Tensor,
         forecast_origin: torch.Tensor,
+        *,
+        history_start: Optional[int] = None,
+        history_stop: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
-        counts = torch.bincount(
-            event_sensor_ids, minlength=self.input_dim
-        ).to(torch.float64)
+        use_preindex = bool(
+            self._sensor_event_rows
+            and history_start is not None
+            and history_stop is not None
+        )
+        counts = (
+            torch.zeros(self.input_dim, dtype=torch.float64)
+            if use_preindex
+            else torch.bincount(
+                event_sensor_ids, minlength=self.input_dim
+            ).to(torch.float64)
+        )
         max_gaps = torch.zeros(self.input_dim, dtype=torch.float64)
         median_gaps = torch.zeros(self.input_dim, dtype=torch.float64)
         last_ages = torch.full(
@@ -1228,7 +1257,19 @@ class EventTimeSeriesDataset(_TemporalTargetMixin, Dataset):
             dtype=torch.float64,
         )
         for sensor in range(self.input_dim):
-            sensor_times = event_timestamps[event_sensor_ids == sensor]
+            if use_preindex:
+                rows = self._sensor_event_rows[sensor]
+                left = int(
+                    torch.searchsorted(rows, int(history_start), right=False).item()
+                )
+                right = int(
+                    torch.searchsorted(rows, int(history_stop), right=False).item()
+                )
+                selected_rows = rows[left:right]
+                sensor_times = self.timestamps[selected_rows]
+                counts[sensor] = int(selected_rows.numel())
+            else:
+                sensor_times = event_timestamps[event_sensor_ids == sensor]
             if sensor_times.numel():
                 last_ages[sensor] = forecast_origin - sensor_times[-1]
             gaps = torch.diff(sensor_times)
@@ -1334,7 +1375,11 @@ class EventTimeSeriesDataset(_TemporalTargetMixin, Dataset):
                             else torch.zeros((), dtype=torch.float64)
                         ),
                         **self._sensor_diagnostics(
-                            event_timestamps, event_sensor_ids, forecast_origin
+                            event_timestamps,
+                            event_sensor_ids,
+                            forecast_origin,
+                            history_start=start,
+                            history_stop=stop,
                         ),
                     }
                 if (

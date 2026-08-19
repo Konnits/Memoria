@@ -647,6 +647,52 @@ def test_sensor_diagnostics_are_exact_before_event_subsampling_and_collate() -> 
     assert batch["sensor_last_observation_age"][0, 1] == 4.0
 
 
+def test_preindexed_sensor_diagnostics_match_brute_force_windows() -> None:
+    timestamps = np.asarray(
+        [0.0, 0.0, 0.5, 1.0, 1.0, 2.0, 3.0, 3.5, 4.0, 4.0, 5.0],
+        dtype=np.float64,
+    )
+    sensor_ids = np.asarray([0, 1, 2, 0, 2, 1, 0, 2, 1, 2, 0], dtype=np.int64)
+    truth_timestamps = np.arange(0.0, 8.5, 0.5, dtype=np.float64)
+    dataset = EventTimeSeriesDataset(
+        _column(np.linspace(-1.0, 1.0, len(timestamps))),
+        timestamps,
+        np.stack([truth_timestamps] * 3, axis=1).astype(np.float32),
+        TimeSeriesDatasetConfig(
+            history_length=16,
+            history_duration=3.0,
+            max_history_events=6,
+            target_horizon_choices=[0.5],
+            target_match_mode="linear",
+            compute_history_diagnostics=True,
+        ),
+        input_dim=3,
+        output_dim=3,
+        event_sensor_ids=sensor_ids,
+        target_timestamps=truth_timestamps,
+        forecast_origin_timestamps=np.asarray([3.0, 4.0, 5.0], dtype=np.float64),
+    )
+
+    for idx, anchor in enumerate(dataset._example_indices):
+        origin = dataset._forecast_origin(idx, int(anchor))
+        start, stop = dataset._history_bounds(idx, int(anchor), origin)
+        event_times = dataset.timestamps[start:stop]
+        event_sensors = dataset.event_sensor_ids[start:stop]
+        brute_force = dataset._sensor_diagnostics(
+            event_times, event_sensors, origin
+        )
+        preindexed = dataset._sensor_diagnostics(
+            event_times,
+            event_sensors,
+            origin,
+            history_start=start,
+            history_stop=stop,
+        )
+        assert brute_force.keys() == preindexed.keys()
+        for key in brute_force:
+            assert torch.equal(brute_force[key], preindexed[key]), (idx, key)
+
+
 def test_event_diagnostics_can_be_disabled_for_train_and_validation() -> None:
     dataset = EventTimeSeriesDataset(
         _column([6.0, 60.0, 8.0, 10.0]),
