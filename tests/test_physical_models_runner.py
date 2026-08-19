@@ -12,6 +12,7 @@ import torch
 from torch.utils.data import DataLoader, Subset
 
 import scripts.benchmark_physical_models as physical_runner
+import ts_transformer.training.train_loop as train_loop
 from scripts.benchmark_physical_models import (
     ChannelScaler,
     ExactDatasetUnit,
@@ -47,6 +48,7 @@ from scripts.benchmark_physical_models import (
     trainer_metrics_from_prediction_rows,
 )
 from ts_transformer.training import Trainer
+from ts_transformer.training.train_loop import TrainingConfig
 
 
 def test_exact_dataset_units_preserve_nonlocal_protocol_indices(
@@ -101,6 +103,46 @@ def test_exact_dataset_unit_cli_rejects_cartesian_filters(
 
     with pytest.raises(ValueError, match="filtros cartesianos"):
         physical_runner.resolve_options(parsed, raw)
+
+
+def test_torch_compile_cli_configures_training_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "benchmark_physical_models.py",
+            "--torch-compile",
+            "--torch-compile-mode",
+            "max-autotune",
+            "--torch-compile-fullgraph",
+        ],
+    )
+    parsed = physical_runner.parse_args()
+    resolved = physical_runner.resolve_options(
+        parsed, physical_runner.load_config(parsed.config)
+    )
+    config = physical_runner.training_config(resolved, checkpoint_dir=None)
+
+    assert config.use_torch_compile is True
+    assert config.torch_compile_mode == "max-autotune"
+    assert config.torch_compile_fullgraph is True
+
+
+def test_torch_compile_missing_triton_skips_without_scoping_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    trainer = Trainer.__new__(Trainer)
+    trainer.config = TrainingConfig(use_torch_compile=True)
+    trainer.device = torch.device("cuda")
+    trainer.model = torch.nn.Identity()
+    monkeypatch.setattr(train_loop.importlib.util, "find_spec", lambda _name: None)
+
+    trainer._compile_model_if_requested()
+
+    assert "Triton no está disponible" in capsys.readouterr().out
 
 
 def test_resume_sentinel_requires_matching_fingerprint_and_artifacts(
@@ -813,7 +855,7 @@ def test_evaluation_transfers_static_batch_once_per_loader_batch(monkeypatch) ->
     transfer_calls = 0
     forward_calls = 0
     original_transfer = physical_runner._static_model_batch_to_device
-    original_forward = physical_runner._forward_prepared_model
+    original_forward = physical_runner._forward_prepared_ablations
 
     def counted_transfer(*args, **kwargs):
         nonlocal transfer_calls
@@ -828,9 +870,7 @@ def test_evaluation_transfers_static_batch_once_per_loader_batch(monkeypatch) ->
     monkeypatch.setattr(
         physical_runner, "_static_model_batch_to_device", counted_transfer
     )
-    monkeypatch.setattr(
-        physical_runner, "_forward_prepared_model", counted_forward
-    )
+    monkeypatch.setattr(physical_runner, "_forward_prepared_ablations", counted_forward)
     ablations = ("real", "all_equal", "regular_grid", "query_only")
     rows = evaluate_prediction_rows(
         model,
@@ -844,8 +884,133 @@ def test_evaluation_transfers_static_batch_once_per_loader_batch(monkeypatch) ->
     )
 
     assert transfer_calls == 1
-    assert forward_calls == len(ablations)
+    assert forward_calls == 1
     assert set(rows["Ablation"]) == set(ablations)
+
+
+@torch.inference_mode()
+def test_fused_ablations_match_individual_prepared_forwards() -> None:
+    data = _prepared()
+    loader = DataLoader(
+        Subset(data.test, list(range(3))),
+        batch_size=3,
+        collate_fn=PhysicalCollate(),
+    )
+    batch = next(iter(loader))
+    model = build_model("QueryOnly", data, _args()).eval()
+    prepared = physical_runner._static_model_batch_to_device(batch, torch.device("cpu"))
+    ablations = (
+        "real",
+        "real_no_count_feature",
+        "all_equal",
+        "all_equal_no_count_feature",
+    )
+    timestamps = torch.stack(
+        [
+            ablate_batch_timestamps(
+                batch,
+                ablation,
+                output_dim=data.n_channels,
+                seed=42 + index,
+            )
+            for index, ablation in enumerate(ablations)
+        ],
+        dim=0,
+    )
+    zero_temporal_features = tuple(
+        ablation.endswith("_no_count_feature") for ablation in ablations
+    )
+
+    expected = torch.stack(
+        [
+            physical_runner._forward_prepared_model(
+                model,
+                prepared,
+                timestamps[index],
+                target_ndim=batch["target_values"].ndim,
+                zero_temporal_features=zero_temporal_features[index],
+            )[0]
+            for index in range(len(ablations))
+        ],
+        dim=0,
+    )
+    actual, log_scales = physical_runner._forward_prepared_ablations(
+        model,
+        prepared,
+        timestamps,
+        target_ndim=batch["target_values"].ndim,
+        zero_temporal_features=zero_temporal_features,
+    )
+
+    assert log_scales is None
+    torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+
+
+@torch.inference_mode()
+def test_fused_evaluation_matches_single_batch_across_loader_batches() -> None:
+    data = _prepared()
+    model = build_model("QueryOnly", data, _args()).eval()
+    ablations = ("real", "real_no_count_feature", "all_equal", "query_only")
+    single_batch = DataLoader(
+        data.test,
+        batch_size=len(data.test),
+        collate_fn=PhysicalCollate(),
+    )
+    multiple_batches = DataLoader(
+        data.test,
+        batch_size=2,
+        collate_fn=PhysicalCollate(),
+    )
+
+    expected = evaluate_prediction_rows(
+        model,
+        single_batch,
+        data,
+        model_name="QueryOnly",
+        seed=42,
+        device="cpu",
+        timestamp_ablations=ablations,
+        history_duration=4.0,
+    )
+    actual = evaluate_prediction_rows(
+        model,
+        multiple_batches,
+        data,
+        model_name="QueryOnly",
+        seed=42,
+        device="cpu",
+        timestamp_ablations=ablations,
+        history_duration=4.0,
+    )
+    sort_columns = ["Ablation", "Example", "Target_Index", "Channel"]
+
+    pd.testing.assert_frame_equal(
+        actual.sort_values(sort_columns).reset_index(drop=True),
+        expected.sort_values(sort_columns).reset_index(drop=True),
+        check_exact=False,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_train_epoch_accumulates_detached_losses_on_device(monkeypatch) -> None:
+    data = _prepared()
+    model = build_model("QueryOnly", data, _args())
+    trainer = Trainer(
+        model,
+        [{}, {}, {}],
+        config=TrainingConfig(device="cpu", num_epochs=1),
+    )
+    synchronize_values: list[bool] = []
+
+    def fake_train_step(_batch, *, synchronize: bool = True):
+        synchronize_values.append(synchronize)
+        return torch.tensor(2.5, device=trainer.device)
+
+    monkeypatch.setattr(trainer, "_train_step", fake_train_step)
+
+    assert trainer._train_one_epoch(epoch=1) == pytest.approx(2.5)
+    assert synchronize_values == [False, False, False]
 
 
 def test_smoke_evaluation_produces_real_and_corrupted_strata() -> None:

@@ -266,6 +266,40 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Permite kernels CUDA rápidos no deterministas.",
     )
+    compile_options = parser.add_mutually_exclusive_group()
+    compile_options.add_argument(
+        "--torch-compile",
+        dest="torch_compile",
+        action="store_true",
+        default=None,
+        help="Activa torch.compile para una sonda de rendimiento explícita.",
+    )
+    compile_options.add_argument(
+        "--no-torch-compile",
+        dest="torch_compile",
+        action="store_false",
+        help="Desactiva torch.compile aunque la configuración lo solicite.",
+    )
+    parser.add_argument(
+        "--torch-compile-mode",
+        choices=("default", "reduce-overhead", "max-autotune"),
+        default=None,
+        help="Modo de torch.compile; por defecto reduce-overhead.",
+    )
+    compile_fullgraph = parser.add_mutually_exclusive_group()
+    compile_fullgraph.add_argument(
+        "--torch-compile-fullgraph",
+        dest="torch_compile_fullgraph",
+        action="store_true",
+        default=None,
+        help="Exige un único grafo para torch.compile.",
+    )
+    compile_fullgraph.add_argument(
+        "--no-torch-compile-fullgraph",
+        dest="torch_compile_fullgraph",
+        action="store_false",
+        help="Permite graph breaks durante torch.compile.",
+    )
     parser.add_argument("--d-model", type=int, default=None)
     parser.add_argument("--num-heads", type=int, default=None)
     parser.add_argument("--num-layers", type=int, default=None)
@@ -411,6 +445,20 @@ def resolve_options(args: argparse.Namespace, raw: Mapping[str, Any]) -> argpars
         if args.deterministic is None
         else args.deterministic
     )
+    args.torch_compile = bool(
+        training.get("use_torch_compile", False)
+        if args.torch_compile is None
+        else args.torch_compile
+    )
+    args.torch_compile_mode = str(
+        args.torch_compile_mode
+        or training.get("torch_compile_mode", "reduce-overhead")
+    )
+    args.torch_compile_fullgraph = bool(
+        training.get("torch_compile_fullgraph", False)
+        if args.torch_compile_fullgraph is None
+        else args.torch_compile_fullgraph
+    )
     args.d_model = int(_option(args, "d_model", model, "d_model"))
     args.num_heads = int(_option(args, "num_heads", model, "num_heads"))
     args.num_layers = int(_option(args, "num_layers", model, "num_layers"))
@@ -463,6 +511,12 @@ def validate_options(args: argparse.Namespace) -> None:
         raise ValueError("epochs debe ser > 0 salvo con --validate-only.")
     if args.d_model % args.num_heads != 0:
         raise ValueError("d_model debe ser divisible por num_heads.")
+    if args.torch_compile_mode not in {
+        "default",
+        "reduce-overhead",
+        "max-autotune",
+    }:
+        raise ValueError("torch_compile_mode no es compatible con este runner.")
     if args.max_observation_rows_per_split is not None and args.max_observation_rows_per_split < 100:
         raise ValueError("max_observation_rows_per_split debe ser >= 100.")
     if "real" not in args.timestamp_ablations:
@@ -1170,34 +1224,65 @@ def _static_model_batch_to_device(
     return prepared
 
 
-def _forward_prepared_model(
+def _forward_prepared_ablations(
     model: nn.Module,
     prepared_batch: Mapping[str, torch.Tensor | None],
     timestamps: torch.Tensor,
     *,
     target_ndim: int,
-    zero_temporal_features: bool = False,
+    zero_temporal_features: Sequence[bool],
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    """Forward sobre tensores ya residentes en el device del modelo."""
+    """Evalúa todas las ablaciones como un único batch ``[A * B, ...]``."""
+
+    if timestamps.ndim != 3:
+        raise ValueError("timestamps debe tener shape [ablaciones, batch, longitud].")
+    ablation_count, batch_size, _ = map(int, timestamps.shape)
+    if len(zero_temporal_features) != ablation_count:
+        raise ValueError("Cada ablación debe declarar su política de features temporales.")
+
+    def repeat_for_ablations(value: torch.Tensor | None) -> torch.Tensor | None:
+        if value is None:
+            return None
+        if value.ndim == 0 or int(value.shape[0]) != batch_size:
+            raise ValueError("Los tensores estáticos deben comenzar con la dimensión batch.")
+        return value.unsqueeze(0).expand(ablation_count, *value.shape).reshape(
+            ablation_count * batch_size, *value.shape[1:]
+        )
+
+    expanded_batch = {
+        key: repeat_for_ablations(value) for key, value in prepared_batch.items()
+    }
+    temporal_features = expanded_batch.get("temporal_features")
+    if temporal_features is not None and any(zero_temporal_features):
+        zero_mask = torch.as_tensor(
+            zero_temporal_features,
+            dtype=torch.bool,
+            device=temporal_features.device,
+        )
+        zero_mask = zero_mask[:, None].expand(ablation_count, batch_size).reshape(-1)
+        zero_mask = zero_mask.reshape(-1, *([1] * (temporal_features.ndim - 1)))
+        expanded_batch["temporal_features"] = torch.where(
+            zero_mask,
+            torch.zeros_like(temporal_features),
+            temporal_features,
+        )
 
     gaussian = (
         str(getattr(getattr(model, "config", None), "prediction_head", "point")).lower()
         == "gaussian"
     )
     kwargs: dict[str, Any] = {
-        "input_values": prepared_batch["input_values"],
-        "input_timestamps": timestamps,
-        "is_target_mask": prepared_batch["is_target_mask"],
-        "padding_mask": prepared_batch.get("padding_mask"),
-        "lengths": prepared_batch.get("lengths"),
-        "input_sensor_ids": prepared_batch.get("input_sensor_ids"),
-        "temporal_features": prepared_batch.get("temporal_features"),
+        "input_values": expanded_batch["input_values"],
+        "input_timestamps": timestamps.reshape(
+            ablation_count * batch_size, *timestamps.shape[2:]
+        ),
+        "is_target_mask": expanded_batch["is_target_mask"],
+        "padding_mask": expanded_batch.get("padding_mask"),
+        "lengths": expanded_batch.get("lengths"),
+        "input_sensor_ids": expanded_batch.get("input_sensor_ids"),
+        "temporal_features": expanded_batch.get("temporal_features"),
         "return_dict": gaussian,
     }
-    if zero_temporal_features and kwargs["temporal_features"] is not None:
-        kwargs["temporal_features"] = torch.zeros_like(
-            kwargs["temporal_features"]
-        )
     prediction = model(**kwargs)
     log_scale = None
     if isinstance(prediction, dict):
@@ -1207,7 +1292,38 @@ def _forward_prepared_model(
         prediction = prediction.unsqueeze(1)
         if log_scale is not None:
             log_scale = log_scale.unsqueeze(1)
-    return prediction.detach(), log_scale.detach() if log_scale is not None else None
+    if int(prediction.shape[0]) != ablation_count * batch_size:
+        raise ValueError("La predicción no conserva la dimensión batch fusionada.")
+    prediction = prediction.detach().reshape(
+        ablation_count, batch_size, *prediction.shape[1:]
+    )
+    if log_scale is not None:
+        if int(log_scale.shape[0]) != ablation_count * batch_size:
+            raise ValueError("log_scale no conserva la dimensión batch fusionada.")
+        log_scale = log_scale.detach().reshape(
+            ablation_count, batch_size, *log_scale.shape[1:]
+        )
+    return prediction, log_scale
+
+
+def _forward_prepared_model(
+    model: nn.Module,
+    prepared_batch: Mapping[str, torch.Tensor | None],
+    timestamps: torch.Tensor,
+    *,
+    target_ndim: int,
+    zero_temporal_features: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Forward compatible para una sola ablación preparada."""
+
+    prediction, log_scale = _forward_prepared_ablations(
+        model,
+        prepared_batch,
+        timestamps.unsqueeze(0),
+        target_ndim=target_ndim,
+        zero_temporal_features=(zero_temporal_features,),
+    )
+    return prediction[0], log_scale[0] if log_scale is not None else None
 
 
 def _forward_model(
@@ -1678,6 +1794,16 @@ def evaluate_prediction_rows(
     if model is not None:
         model.eval()
     frames: list[pd.DataFrame] = []
+    neural_batches: list[
+        tuple[
+            pd.DataFrame,
+            np.ndarray,
+            tuple[int, int, int],
+            list[tuple[str, bool]],
+            torch.Tensor,
+            torch.Tensor | None,
+        ]
+    ] = []
     example_offset = 0
     for batch_index, batch in enumerate(loader):
         targets_z = batch["target_values"]
@@ -1722,63 +1848,100 @@ def evaluate_prediction_rows(
             log_scales_by_ablation: list[torch.Tensor | None] = [None] * len(
                 ablation_specs
             )
+            if not template.empty:
+                for (canonical_ablation, _), predictions_z, log_scales_z in zip(
+                    ablation_specs,
+                    predictions_by_ablation,
+                    log_scales_by_ablation,
+                ):
+                    frames.append(
+                        _prediction_frame_for_ablation(
+                            template,
+                            flat_positions,
+                            target_shape,
+                            predictions_z,
+                            log_scales_z,
+                            ablation=canonical_ablation,
+                            scaler=data.scaler,
+                        )
+                    )
         elif ablation_specs:
             prepared_batch = _static_model_batch_to_device(batch, device_object)
             device_timestamps = torch.stack(timestamp_variants, dim=0).to(
                 device_object, non_blocking=True
             )
-            device_predictions: list[torch.Tensor] = []
-            device_log_scales: list[torch.Tensor] = []
-            for ablation_index, (_, zero_temporal_features) in enumerate(
-                ablation_specs
-            ):
-                prediction, log_scale = _forward_prepared_model(
-                    model,
-                    prepared_batch,
-                    device_timestamps[ablation_index],
-                    target_ndim=targets_z.ndim,
-                    zero_temporal_features=zero_temporal_features,
+            device_predictions, device_log_scales = _forward_prepared_ablations(
+                model,
+                prepared_batch,
+                device_timestamps,
+                target_ndim=targets_z.ndim,
+                zero_temporal_features=[spec[1] for spec in ablation_specs],
+            )
+            expected_shape = (len(ablation_specs), *target_shape)
+            if tuple(device_predictions.shape) != expected_shape:
+                raise ValueError(
+                    f"Predicción {tuple(device_predictions.shape)} != {expected_shape}"
                 )
-                if tuple(prediction.shape) != target_shape:
-                    raise ValueError(
-                        f"Predicción {tuple(prediction.shape)} != target {target_shape}"
-                    )
-                device_predictions.append(prediction)
-                if log_scale is not None:
-                    device_log_scales.append(log_scale)
-            predictions_tensor = torch.stack(device_predictions, dim=0).cpu()
-            predictions_by_ablation = list(predictions_tensor.unbind(0))
-            if device_log_scales:
-                if len(device_log_scales) != len(device_predictions):
-                    raise ValueError(
-                        "El modelo mezcló outputs puntuales y gaussianos entre ablaciones."
-                    )
-                log_scale_tensor = torch.stack(device_log_scales, dim=0).cpu()
-                log_scales_by_ablation = list(log_scale_tensor.unbind(0))
-            else:
-                log_scales_by_ablation = [None] * len(ablation_specs)
-        else:
-            predictions_by_ablation = []
-            log_scales_by_ablation = []
-
-        if not template.empty:
-            for (canonical_ablation, _), predictions_z, log_scales_z in zip(
-                ablation_specs,
-                predictions_by_ablation,
-                log_scales_by_ablation,
-            ):
-                frames.append(
-                    _prediction_frame_for_ablation(
-                        template,
-                        flat_positions,
-                        target_shape,
-                        predictions_z,
-                        log_scales_z,
-                        ablation=canonical_ablation,
-                        scaler=data.scaler,
-                    )
+            if device_log_scales is not None and tuple(device_log_scales.shape) != expected_shape:
+                raise ValueError(
+                    f"log_scale {tuple(device_log_scales.shape)} != {expected_shape}"
                 )
+            neural_batches.append(
+                (
+                    template,
+                    flat_positions,
+                    target_shape,
+                    ablation_specs,
+                    device_predictions,
+                    device_log_scales,
+                )
+            )
         example_offset += targets_z.shape[0]
+
+    if neural_batches:
+        has_log_scales = neural_batches[0][5] is not None
+        if any((entry[5] is not None) != has_log_scales for entry in neural_batches):
+            raise ValueError("El modelo mezcló outputs puntuales y gaussianos entre batches.")
+        predictions_tensor = torch.cat(
+            [entry[4] for entry in neural_batches], dim=1
+        ).cpu()
+        log_scale_tensor = (
+            torch.cat(
+                [entry[5] for entry in neural_batches if entry[5] is not None],
+                dim=1,
+            ).cpu()
+            if has_log_scales
+            else None
+        )
+        batch_offset = 0
+        for template, flat_positions, target_shape, ablation_specs, _, _ in neural_batches:
+            batch_size = target_shape[0]
+            predictions_by_ablation = predictions_tensor[
+                :, batch_offset : batch_offset + batch_size
+            ]
+            batch_log_scales = (
+                log_scale_tensor[:, batch_offset : batch_offset + batch_size]
+                if log_scale_tensor is not None
+                else None
+            )
+            if not template.empty:
+                for ablation_index, (canonical_ablation, _) in enumerate(ablation_specs):
+                    frames.append(
+                        _prediction_frame_for_ablation(
+                            template,
+                            flat_positions,
+                            target_shape,
+                            predictions_by_ablation[ablation_index],
+                            (
+                                batch_log_scales[ablation_index]
+                                if batch_log_scales is not None
+                                else None
+                            ),
+                            ablation=canonical_ablation,
+                            scaler=data.scaler,
+                        )
+                    )
+            batch_offset += batch_size
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
@@ -2113,6 +2276,13 @@ def training_config(
         use_amp=args.device.startswith("cuda"),
         enable_cuda_runtime_optimizations=not bool(
             getattr(args, "deterministic", False)
+        ),
+        use_torch_compile=bool(getattr(args, "torch_compile", False)),
+        torch_compile_mode=str(
+            getattr(args, "torch_compile_mode", "reduce-overhead")
+        ),
+        torch_compile_fullgraph=bool(
+            getattr(args, "torch_compile_fullgraph", False)
         ),
     )
 

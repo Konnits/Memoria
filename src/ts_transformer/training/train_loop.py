@@ -199,9 +199,9 @@ class Trainer:
             return
 
         try:
-            import torch._dynamo  # type: ignore
+            import torch._dynamo as torch_dynamo  # type: ignore
 
-            torch._dynamo.config.suppress_errors = True
+            torch_dynamo.config.suppress_errors = True
         except Exception:
             pass
 
@@ -363,16 +363,18 @@ class Trainer:
     # ------------------------------------------------------------------
     def _train_one_epoch(self, epoch: int) -> float:
         self.model.train()
-        running_loss = 0.0
+        running_loss = torch.zeros((), device=self.device)
         num_batches = 0
 
         for step, batch in enumerate(self.train_loader, start=1):
-            loss_value = self._train_step(batch)
-            running_loss += loss_value
+            loss_value = self._train_step(batch, synchronize=False)
+            if not isinstance(loss_value, torch.Tensor):
+                raise TypeError("_train_step sin sincronización debe retornar un tensor.")
+            running_loss.add_(loss_value)
             num_batches += 1
 
             if self.config.log_every_n_steps > 0 and step % self.config.log_every_n_steps == 0:
-                avg_loss = running_loss / num_batches
+                avg_loss = float((running_loss / num_batches).item())
                 print(
                     f"[Epoch {epoch:03d}] Step {step:05d} "
                     f"- train_loss (promedio) = {avg_loss:.6f}"
@@ -380,9 +382,14 @@ class Trainer:
 
         if num_batches == 0:
             return 0.0
-        return running_loss / num_batches
+        return float((running_loss / num_batches).item())
 
-    def _train_step(self, batch: Dict[str, torch.Tensor]) -> float:
+    def _train_step(
+        self,
+        batch: Dict[str, torch.Tensor],
+        *,
+        synchronize: bool = True,
+    ) -> float | torch.Tensor:
         self.optimizer.zero_grad(set_to_none=True)
 
         # Mover batch al device (non_blocking requiere pin_memory en DataLoader)
@@ -469,7 +476,8 @@ class Trainer:
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        return float(loss.item())
+        detached_loss = loss.detach()
+        return float(detached_loss.item()) if synchronize else detached_loss
 
     def _apply_finetune_schedule(self, epoch: int) -> None:
         """
