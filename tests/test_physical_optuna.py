@@ -109,6 +109,7 @@ def test_physical_tuning_uses_all_matching_datasets_by_default() -> None:
         parse_args(["--limit-datasets-per-kind", "1"]).limit_datasets_per_kind
         == 1
     )
+    assert parse_args(["--verbose"]).verbose is True
 
 
 def test_study_rejects_an_incompatible_protocol() -> None:

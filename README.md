@@ -513,8 +513,9 @@ un estudio separado:
 ```powershell
 conda.exe run -n memoria python scripts/tune_physical_optuna.py `
     --kinds univariate multivariate `
-    --trials 50 `
-    --epochs 10
+  --trials 50 `
+  --epochs 10 `
+  --verbose
 ```
 
 `tune_physical_optuna.py` entrena con horizontes continuos sobre
@@ -526,7 +527,9 @@ reanudación incompatible se rechaza en vez de mezclar trials. Por defecto usa
 todos los datasets que coinciden con los filtros; `--limit-datasets-per-kind`
 debe indicarse explícitamente para una prueba acotada. Para un smoke también
 puede usarse `--max-observation-rows-per-split`, pero cualquiera de esos caps
-altera la tarea y no produce un resultado científico final.
+altera la tarea y no produce un resultado científico final. `--verbose` conserva
+el resumen de cada trial y añade el progreso de entrenamiento en tiempo real;
+los resultados se reanudan desde `experiments/optuna_physical/physical_optuna.db`.
 
 ---
 

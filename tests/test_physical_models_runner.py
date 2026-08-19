@@ -1013,6 +1013,50 @@ def test_train_epoch_accumulates_detached_losses_on_device(monkeypatch) -> None:
     assert synchronize_values == [False, False, False]
 
 
+def test_verbose_train_epoch_logs_final_step(capsys) -> None:
+    data = _prepared()
+    model = build_model("QueryOnly", data, _args())
+    trainer = Trainer(
+        model,
+        [{}, {}, {}],
+        config=TrainingConfig(device="cpu", num_epochs=1, log_every_n_steps=2),
+    )
+
+    def fake_train_step(_batch, *, synchronize: bool = True):
+        del synchronize
+        return torch.tensor(1.0, device=trainer.device)
+
+    trainer._train_step = fake_train_step
+    trainer._train_one_epoch(epoch=1)
+
+    output = capsys.readouterr().out
+    assert "00002/00003" in output
+    assert "00003/00003" in output
+
+
+def test_epoch_summary_keeps_terminal_metrics_compact(capsys) -> None:
+    Trainer._log_epoch_summary(
+        1,
+        0.386058,
+        {
+            "val_loss": 0.794022,
+            "val_rmse": 0.891079,
+            "val_mae": 0.718145,
+            "val_mape": 832.443333,
+            "val_rmse_channel_0": 1.048429,
+        },
+        8.6,
+    )
+
+    output = capsys.readouterr().out
+    assert "train_loss=0.386058" in output
+    assert "val_loss=0.794022" in output
+    assert "val_rmse=0.891079" in output
+    assert "val_mae=0.718145" in output
+    assert "val_mape" not in output
+    assert "val_rmse_channel_0" not in output
+
+
 def test_smoke_evaluation_produces_real_and_corrupted_strata() -> None:
     data = _prepared()
     loader = DataLoader(data.test, batch_size=3, collate_fn=PhysicalCollate())

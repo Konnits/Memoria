@@ -109,6 +109,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--device", default="auto")
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Muestra el progreso por batch mientras Optuna entrena cada trial.",
+    )
+    parser.add_argument(
         "--max-observation-rows-per-split",
         type=int,
         default=None,
@@ -404,7 +409,7 @@ def sample_model_and_training(
         loss_name="mse",
         optimizer_config=optimizer,
         grad_clip_norm=1.0,
-        log_every_n_steps=0,
+        log_every_n_steps=50 if bool(getattr(args, "verbose", False)) else 0,
         checkpoint_dir=None,
         save_best_on="val_rmse",
         early_stopping_patience=args.early_stopping_patience,

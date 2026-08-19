@@ -365,6 +365,7 @@ class Trainer:
         self.model.train()
         running_loss = torch.zeros((), device=self.device)
         num_batches = 0
+        total = len(self.train_loader)
 
         for step, batch in enumerate(self.train_loader, start=1):
             loss_value = self._train_step(batch, synchronize=False)
@@ -373,9 +374,15 @@ class Trainer:
             running_loss.add_(loss_value)
             num_batches += 1
 
-            if self.config.log_every_n_steps > 0 and step % self.config.log_every_n_steps == 0:
+            should_log = (
+                self.config.log_every_n_steps > 0
+                and (
+                    step % self.config.log_every_n_steps == 0
+                    or step == total
+                )
+            )
+            if should_log:
                 avg_loss = float((running_loss / num_batches).item())
-                total = len(self.train_loader)
                 progress = int(30 * step / total) if total > 0 else 0
                 bar = "=" * progress + "." * max(0, 30 - progress)
                 # ponytail: progreso en-lugar (sin dependencias extra) como TensorFlow para reducir spam
@@ -806,11 +813,6 @@ class Trainer:
             )
         metrics["val_loss"] = val_loss
 
-        print(
-            f"[Epoch {epoch:03d}] "
-            + ", ".join(f"{k}={v:.6f}" for k, v in metrics.items())
-        )
-
         return metrics
 
     @staticmethod
@@ -988,7 +990,18 @@ class Trainer:
     ) -> None:
         msg = f"[Epoch {epoch:03d}] train_loss={train_loss:.6f}"
         if metrics_val:
-            metrics_str = ", ".join(f"{k}={v:.6f}" for k, v in metrics_val.items())
+            summary_keys = (
+                "val_loss",
+                "val_rmse",
+                "val_mae",
+                "val_nll",
+                "val_crps",
+            )
+            metrics_str = ", ".join(
+                f"{key}={metrics_val[key]:.6f}"
+                for key in summary_keys
+                if key in metrics_val
+            )
             msg += f" | {metrics_str}"
         msg += f" | tiempo={elapsed:.1f}s"
         print(msg)
