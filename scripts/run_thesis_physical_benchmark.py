@@ -24,6 +24,7 @@ import math
 import os
 import platform
 import shutil
+import threading
 
 # ponytail: evita thrashing de CPU; GPU saturará más rápido con batches pequeños
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -747,6 +748,7 @@ def _physical_command_spec(
     logs_dir: Path,
     models: Sequence[str],
     smoke: bool,
+    verbose: bool,
 ) -> CommandSpec:
     if not units or len({unit.shard for unit in units}) != 1:
         raise ProtocolError("Cada comando físico debe contener un único shard no vacío.")
@@ -797,6 +799,8 @@ def _physical_command_spec(
     )
     if smoke:
         command.append("--force-rerun")
+    if verbose:
+        command.append("--verbose")
     return CommandSpec(
         cohort=cohort,
         protocol="physical_models",
@@ -815,6 +819,7 @@ def build_run_commands(
     cohorts: Sequence[str] = COHORT_NAMES,
     include_identifiability: bool = True,
     smoke: bool = False,
+    verbose: bool = False,
 ) -> list[CommandSpec]:
     data_directory = data_root(config)
     models = [str(value) for value in config["models"]]
@@ -851,6 +856,7 @@ def build_run_commands(
                     logs_dir=logs_dir,
                     models=models,
                     smoke=True,
+                    verbose=verbose,
                 )
             )
         if include_identifiability and bool(config["identifiability"].get("enabled", True)):
@@ -892,6 +898,7 @@ def build_run_commands(
                     logs_dir=logs_dir,
                     models=models,
                     smoke=False,
+                    verbose=verbose,
                 )
             )
         if include_identifiability and bool(config["identifiability"].get("enabled", True)):
@@ -924,6 +931,17 @@ def _log_tail(path: Path | None, lines: int = 20) -> str:
         return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
     except OSError:
         return ""
+
+
+def _tee_process_stream(stream: Any, log_handle: Any) -> None:
+    """Copia un stream hijo al log y a la terminal sin esperar a que termine."""
+    try:
+        for line in iter(stream.readline, ""):
+            log_handle.write(line)
+            log_handle.flush()
+            print(line, end="", flush=True)
+    finally:
+        stream.close()
 
 
 def _terminate_active_processes(
@@ -965,6 +983,7 @@ def _execute_sequential_physical(
     *,
     heartbeat_interval_s: float = 30.0,
     poll_interval_s: float = 0.5,
+    verbose: bool = False,
 ) -> None:
     if (
         len(specs) != 1
@@ -978,6 +997,7 @@ def _execute_sequential_physical(
     if heartbeat_interval_s <= 0 or poll_interval_s <= 0:
         raise ValueError("Los intervalos de polling/heartbeat deben ser > 0.")
     processes: list[tuple[CommandSpec, subprocess.Popen[Any]]] = []
+    output_threads: list[threading.Thread] = []
     environment = os.environ.copy()
     environment["PYTHONUNBUFFERED"] = "1"
     with ExitStack() as stack:
@@ -997,20 +1017,41 @@ def _execute_sequential_physical(
                     f"{command_text(spec.command)}",
                     flush=True,
                 )
-                processes.append(
-                    (
-                        spec,
-                        subprocess.Popen(
-                            spec.command,
-                            cwd=REPOSITORY_ROOT,
-                            stdout=stdout,
-                            stderr=stderr,
-                            env=environment,
-                        ),
+                popen_kwargs: dict[str, Any] = {
+                    "cwd": REPOSITORY_ROOT,
+                    "env": environment,
+                }
+                if verbose:
+                    popen_kwargs.update(
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
                     )
-                )
+                else:
+                    popen_kwargs.update(stdout=stdout, stderr=stderr)
+                process = subprocess.Popen(spec.command, **popen_kwargs)
+                processes.append((spec, process))
+                if verbose:
+                    if process.stdout is None or process.stderr is None:
+                        raise ProtocolError(
+                            "El modo verbose requiere capturar stdout y stderr del hijo."
+                        )
+                    for stream, log_handle in (
+                        (process.stdout, stdout),
+                        (process.stderr, stderr),
+                    ):
+                        thread = threading.Thread(
+                            target=_tee_process_stream,
+                            args=(stream, log_handle),
+                            daemon=True,
+                        )
+                        thread.start()
+                        output_threads.append(thread)
         except BaseException:
             _terminate_active_processes(processes)
+            for thread in output_threads:
+                thread.join()
             raise
         failures: list[str] = []
         pending = {int(spec.shard): (spec, process) for spec, process in processes}
@@ -1023,6 +1064,9 @@ def _execute_sequential_physical(
                     if returncode is None:
                         continue
                     process.wait()
+                    for thread in output_threads:
+                        thread.join()
+                    output_threads.clear()
                     completed_shards.append(shard)
                     del pending[shard]
                     print(
@@ -1060,6 +1104,8 @@ def _execute_sequential_physical(
                 time.sleep(poll_interval_s)
         except BaseException:
             _terminate_active_processes(tuple(pending.values()))
+            for thread in output_threads:
+                thread.join()
             raise
     if failures:
         raise ProtocolError(
@@ -1068,7 +1114,7 @@ def _execute_sequential_physical(
         )
 
 
-def execute_commands(commands: Sequence[CommandSpec]) -> None:
+def execute_commands(commands: Sequence[CommandSpec], *, verbose: bool = False) -> None:
     index = 0
     while index < len(commands):
         spec = commands[index]
@@ -1081,7 +1127,7 @@ def execute_commands(commands: Sequence[CommandSpec]) -> None:
             ):
                 physical.append(commands[index])
                 index += 1
-            _execute_sequential_physical(physical)
+            _execute_sequential_physical(physical, verbose=verbose)
             continue
         print(f"[{spec.cohort}/{spec.protocol}]", flush=True)
         print(command_text(spec.command), flush=True)
@@ -2265,6 +2311,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Sólo para dry-run rápido; preflight/run final siempre calculan SHA-256.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Muestra en tiempo real el progreso de los procesos físicos y conserva los logs.",
+    )
     return parser.parse_args()
 
 
@@ -2297,6 +2348,7 @@ def main() -> None:
             root=root,
             cohorts=cohorts,
             include_identifiability=include_identifiability,
+            verbose=args.verbose,
         ):
             print(f"[{spec.cohort}/{spec.protocol}] {command_text(spec.command)}")
         return
@@ -2319,7 +2371,9 @@ def main() -> None:
                 root=root,
                 include_identifiability=include_identifiability,
                 smoke=True,
-            )
+                verbose=args.verbose,
+            ),
+            verbose=args.verbose,
         )
         print(f"Smoke completo: {root / 'smoke'}")
         return
@@ -2348,7 +2402,9 @@ def main() -> None:
                 root=root,
                 cohorts=cohorts,
                 include_identifiability=include_identifiability,
-            )
+                verbose=args.verbose,
+            ),
+            verbose=args.verbose,
         )
         for cohort in cohorts:
             published = consolidate_physical_shards(

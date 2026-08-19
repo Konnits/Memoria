@@ -111,6 +111,11 @@ conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py smoke `
 # 3. Audita, ejecuta la campaña física secuencial y consolida el reporte final
 conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py all `
     --config configs/benchmark/thesis_physical_final.yaml
+
+# 4. Igual que el comando anterior, mostrando el progreso de entrenamiento
+#    en tiempo real y conservando también los archivos de log
+conda.exe run -n memoria python scripts/run_thesis_physical_benchmark.py all `
+  --config configs/benchmark/thesis_physical_final.yaml --verbose
 ```
 
 `all` comienza con el preflight estricto: exige el entorno `memoria`, HEAD y
@@ -118,8 +123,11 @@ worktree limpios, `pytest` completo, `git diff --check`, hashes de fuentes y el
 runtime CUDA requerido. Si esa auditoría falla, no inicia entrenamiento.
 
 Durante la ejecución, el coordinador imprime periódicamente el estado del único
-proceso físico y la ubicación de su log. Para observarlo en otra terminal de
-PowerShell se puede usar:
+proceso físico y la ubicación de su log. Con `--verbose`, el progreso por batch
+del proceso físico se muestra en tiempo real en la misma terminal y se conserva
+simultáneamente en los archivos `stdout`/`stderr`. Sin `--verbose` se mantiene el
+comportamiento silencioso del hijo y sólo se escriben esos archivos. Para
+observar un log en otra terminal de PowerShell se puede usar:
 
 ```powershell
 Get-Content experiments/thesis_physical_benchmark_v3/main/logs/physical_models_shard_0.stdout.log -Wait

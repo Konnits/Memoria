@@ -354,6 +354,15 @@ def test_full_commands_keep_cohorts_outputs_and_dataset_ids_separate(
     assert parsed_indices == list(range(16))
 
 
+def test_verbose_physical_commands_forward_progress_flag(tmp_path: Path) -> None:
+    config = load_final_config(DEFAULT_CONFIG)
+    commands = build_run_commands(config, root=tmp_path, verbose=True)
+
+    physical = [item for item in commands if item.protocol == "physical_models"]
+    assert len(physical) == 2
+    assert all("--verbose" in item.command for item in physical)
+
+
 def test_failed_sequential_physical_run_stops_serial_stages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -450,6 +459,63 @@ def test_sequential_physical_emits_heartbeat_and_completion(
     output = capsys.readouterr().out
     assert "heartbeat: activos=shard_0; completos=-" in output
     assert "shard_0] terminado (returncode=0)" in output
+
+
+def test_verbose_sequential_physical_tees_child_output_to_terminal_and_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Stream:
+        def __init__(self, text: str) -> None:
+            self.lines = iter(text.splitlines(keepends=True))
+
+        def readline(self) -> str:
+            return next(self.lines, "")
+
+        def close(self) -> None:
+            pass
+
+    class VerboseProcess:
+        def __init__(self, _command, **kwargs) -> None:
+            assert kwargs["stdout"] is thesis_runner.subprocess.PIPE
+            assert kwargs["stderr"] is thesis_runner.subprocess.PIPE
+            self.stdout = Stream("child stdout\n")
+            self.stderr = Stream("child stderr\n")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None) -> int:
+            del timeout
+            return self.returncode
+
+    monkeypatch.setattr(thesis_runner.subprocess, "Popen", VerboseProcess)
+    monkeypatch.setattr(thesis_runner.time, "monotonic", lambda: 0.0)
+    specs = [
+        CommandSpec(
+            cohort="main",
+            protocol="physical_models",
+            command=("python", "shard_0"),
+            output_dir=tmp_path / "shard_0",
+            shard=0,
+            stdout_log=tmp_path / "shard_0.out.log",
+            stderr_log=tmp_path / "shard_0.err.log",
+        )
+    ]
+
+    thesis_runner._execute_sequential_physical(
+        specs,
+        verbose=True,
+        poll_interval_s=0.01,
+    )
+
+    output = capsys.readouterr().out
+    assert "child stdout" in output
+    assert "child stderr" in output
+    assert "child stdout" in specs[0].stdout_log.read_text(encoding="utf-8")
+    assert "child stderr" in specs[0].stderr_log.read_text(encoding="utf-8")
 
 
 def test_keyboard_interrupt_terminates_only_active_children(

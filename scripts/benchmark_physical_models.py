@@ -316,6 +316,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-checkpoints", action="store_true")
     parser.add_argument("--no-save-predictions", action="store_true")
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Muestra progreso por batch durante el entrenamiento.",
+    )
+    parser.add_argument(
         "--force-rerun",
         action="store_true",
         help="Ignora sentinels compatibles y vuelve a ejecutar cada run.",
@@ -2268,7 +2273,7 @@ def training_config(
         loss_name="mse",
         optimizer_config=optimizer,
         grad_clip_norm=1.0,
-        log_every_n_steps=0,
+        log_every_n_steps=50 if bool(getattr(args, "verbose", False)) else 0,
         checkpoint_dir=str(checkpoint_dir) if checkpoint_dir else None,
         save_best_on=checkpoint_selection_metric(model_name) or "val_rmse",
         early_stopping_patience=args.early_stopping_patience,
