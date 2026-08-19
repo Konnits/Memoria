@@ -1,4 +1,4 @@
-"""Orquestador reproducible del benchmark físico final de la tesis.
+"""Orquestador reproducible y secuencial del benchmark físico final de la tesis.
 
 El protocolo selecciona unidades exactas, conserva ``main`` y ``stress`` en
 directorios distintos, ejecuta controles de identificabilidad y sólo genera el
@@ -147,8 +147,10 @@ def cohort_units(config: Mapping[str, Any], cohort: str) -> tuple[DatasetUnit, .
 
 def physical_process_count(config: Mapping[str, Any]) -> int:
     value = int(config.get("execution", {}).get("parallel_physical_processes", 0))
-    if value < 1:
-        raise ProtocolError("parallel_physical_processes debe ser >= 1.")
+    if value != 1:
+        raise ProtocolError(
+            "El protocolo v3 secuencial exige parallel_physical_processes: 1."
+        )
     return value
 
 
@@ -160,12 +162,12 @@ def cohort_shards(config: Mapping[str, Any], cohort: str) -> tuple[int, ...]:
 
 
 def validate_final_config(config: Mapping[str, Any]) -> None:
-    if config.get("protocol_status") != "thesis_physical_evaluation_v2_frozen":
-        raise ProtocolError("El protocolo v2 debe estar congelado como evaluación física.")
+    if config.get("protocol_status") != "thesis_physical_evaluation_v3_frozen":
+        raise ProtocolError("El protocolo v3 debe estar congelado como evaluación física.")
     if Path(str(config.get("output_dir", ""))).as_posix() != (
-        "experiments/thesis_physical_benchmark_v2"
+        "experiments/thesis_physical_benchmark_v3"
     ):
-        raise ProtocolError("El protocolo v2 exige su output root nuevo y aislado.")
+        raise ProtocolError("El protocolo v3 exige su output root nuevo y aislado.")
     claim_boundary = str(config.get("claim_boundary", ""))
     if "retrospective" not in claim_boundary or "not_external_validation" not in claim_boundary:
         raise ProtocolError("Falta el límite retrospectivo/no externo de las conclusiones.")
@@ -173,7 +175,7 @@ def validate_final_config(config: Mapping[str, Any]) -> None:
     if seeds != EXPECTED_SEEDS:
         raise ProtocolError(f"Las seeds finales deben ser exactamente {EXPECTED_SEEDS}.")
     if config.get("training", {}).get("deterministic") is not False:
-        raise ProtocolError("El protocolo v2 exige deterministic: false.")
+        raise ProtocolError("El protocolo v3 exige deterministic: false.")
     if int(config["training"].get("batch_size", -1)) != 32:
         raise ProtocolError("El batch_size final congelado debe ser 32.")
     if str(config["training"].get("device")) != "cuda":
@@ -201,8 +203,10 @@ def validate_final_config(config: Mapping[str, Any]) -> None:
     if int(config.get("execution", {}).get("num_workers_required", -1)) != 0:
         raise ProtocolError("execution.num_workers_required debe ser 0.")
     configured_processes = physical_process_count(config)
+    if config.get("execution", {}).get("physical_execution_mode") != "sequential":
+        raise ProtocolError("El protocolo v3 exige physical_execution_mode: sequential.")
     if config.get("execution", {}).get("fast_kernels") is not True:
-        raise ProtocolError("El protocolo v2 exige fast_kernels: true.")
+        raise ProtocolError("El protocolo v3 exige fast_kernels: true.")
     preflight = config.get("preflight", {})
     if (
         preflight.get("required_conda_environment") != "memoria"
@@ -563,6 +567,7 @@ def preflight_manifest(
         "timestamp_ablations": list(config["evaluation"]["timestamp_ablations"]),
         "deterministic": False,
         "fast_kernels": True,
+        "physical_execution_mode": "sequential",
         "parallel_physical_processes": physical_process_count(config),
         "runtime": runtime,
         "dataset_generator_provenance": {
@@ -635,7 +640,7 @@ def require_compatible_preflight(
     ) != set(cohorts):
         raise ProtocolError("El preflight no corresponde a las cohortes solicitadas.")
     if manifest.get("protocol_status") != config.get("protocol_status"):
-        raise ProtocolError("El preflight no corresponde al protocolo v2 congelado.")
+        raise ProtocolError("El preflight no corresponde al protocolo v3 congelado.")
     if Path(str(manifest.get("output_root", ""))).resolve() != root.resolve():
         raise ProtocolError("El output root no coincide con el preflight.")
     expected_units = {
@@ -659,10 +664,11 @@ def require_compatible_preflight(
     if (
         manifest.get("deterministic") is not False
         or manifest.get("fast_kernels") is not True
+        or manifest.get("physical_execution_mode") != "sequential"
         or int(manifest.get("parallel_physical_processes", -1))
         != physical_process_count(config)
     ):
-        raise ProtocolError("El preflight no corresponde al protocolo acelerado v2.")
+        raise ProtocolError("El preflight no corresponde al protocolo secuencial v3.")
     runtime = manifest.get("runtime", {})
     if not bool(runtime.get("strict", False)):
         raise ProtocolError("El run final requiere un preflight estricto.")
@@ -949,19 +955,20 @@ def _terminate_active_processes(
             pass
 
 
-def _execute_parallel_physical(
+def _execute_sequential_physical(
     specs: Sequence[CommandSpec],
     *,
     heartbeat_interval_s: float = 30.0,
     poll_interval_s: float = 0.5,
 ) -> None:
-    expected_shards = set(range(len(specs)))
     if (
-        not specs
-        or {spec.shard for spec in specs} != expected_shards
+        len(specs) != 1
+        or specs[0].shard != 0
         or len({spec.cohort for spec in specs}) != 1
     ):
-        raise ProtocolError("Cada cohorte física debe lanzar shards contiguos no vacíos.")
+        raise ProtocolError(
+            "Cada cohorte física debe lanzar una sola instancia secuencial en shard_0."
+        )
     cohort = specs[0].cohort
     if heartbeat_interval_s <= 0 or poll_interval_s <= 0:
         raise ValueError("Los intervalos de polling/heartbeat deben ser > 0.")
@@ -1051,7 +1058,7 @@ def _execute_parallel_physical(
             raise
     if failures:
         raise ProtocolError(
-            f"{cohort}: falló al menos un shard físico; no se consolida ni publica.\n"
+            f"{cohort}: falló la ejecución física secuencial; no se consolida ni publica.\n"
             + "\n".join(failures)
         )
 
@@ -1069,7 +1076,7 @@ def execute_commands(commands: Sequence[CommandSpec]) -> None:
             ):
                 physical.append(commands[index])
                 index += 1
-            _execute_parallel_physical(physical)
+            _execute_sequential_physical(physical)
             continue
         print(f"[{spec.cohort}/{spec.protocol}]", flush=True)
         print(command_text(spec.command), flush=True)
@@ -1366,7 +1373,7 @@ def _verify_shard_manifest(
 ) -> dict[str, Any]:
     path = physical_root / "shard_manifest.json"
     if not path.is_file():
-        raise ProtocolError(f"Falta publicación v2 de shards: {path}")
+        raise ProtocolError(f"Falta publicación v3 de la ejecución física: {path}")
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -1391,9 +1398,10 @@ def _verify_shard_manifest(
         for item in manifest.get("units", ())
     }
     if (
-        manifest.get("schema_version") != 2
+        manifest.get("schema_version") != 3
         or manifest.get("status") != "complete"
         or manifest.get("cohort") != cohort
+        or manifest.get("physical_execution_mode") != "sequential"
         or int(manifest.get("parallel_physical_processes", -1))
         != len(cohort_shards(config, cohort))
         or observed_units != expected_units
@@ -1401,7 +1409,7 @@ def _verify_shard_manifest(
         != preflight.get("manifest_fingerprint")
         or manifest.get("config_sha256") != preflight.get("config", {}).get("sha256")
     ):
-        raise ProtocolError(f"Manifest de shards incompatible con v2: {path}")
+        raise ProtocolError(f"Manifest físico incompatible con v3: {path}")
     return manifest
 
 
@@ -1442,7 +1450,7 @@ def consolidate_physical_shards(
     *,
     preflight: Mapping[str, Any],
 ) -> Path:
-    """Valida todos los shards y publica una vista unificada de forma atómica."""
+    """Valida la ejecución secuencial y publica una vista unificada atómica."""
     cohort_dir = cohort_output_dir(config, cohort, root)
     shard_base = cohort_dir / "physical_model_shards"
     shard_frames: list[pd.DataFrame] = []
@@ -1469,9 +1477,10 @@ def consolidate_physical_shards(
         )
 
     manifest: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "complete",
         "cohort": cohort,
+        "physical_execution_mode": "sequential",
         "parallel_physical_processes": len(cohort_shards(config, cohort)),
         "preflight_fingerprint": preflight.get("manifest_fingerprint"),
         "config_sha256": preflight.get("config", {}).get("sha256"),
@@ -2213,6 +2222,7 @@ def generate_report(
         "schema_version": 1,
         "status": "complete",
         "protocol_status": config["protocol_status"],
+        "physical_execution_mode": "sequential",
         "parallel_physical_processes": physical_process_count(config),
         "config": file_provenance(Path(config["_config_path"])),
         "aggregation_order": list(config["reporting"]["aggregation_order"]),
@@ -2342,7 +2352,7 @@ def main() -> None:
             print(f"Publicación física consolidada: {published}")
         if args.command == "run":
             print(
-                "Runs y shards físicos publicados. Ejecute el subcomando report "
+                "Runs físicos secuenciales publicados. Ejecute el subcomando report "
                 "para generar los agregados finales."
             )
             return

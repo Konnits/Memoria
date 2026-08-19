@@ -40,8 +40,8 @@ def test_frozen_protocol_selects_exact_main_and_stress_units() -> None:
     main = cohort_units(config, "main")
     stress = cohort_units(config, "stress")
 
-    assert config["protocol_status"] == "thesis_physical_evaluation_v2_frozen"
-    assert config["output_dir"] == "experiments/thesis_physical_benchmark_v2"
+    assert config["protocol_status"] == "thesis_physical_evaluation_v3_frozen"
+    assert config["output_dir"] == "experiments/thesis_physical_benchmark_v3"
     assert "retrospective" in config["claim_boundary"]
     assert tuple(config["training"]["seeds"]) == EXPECTED_SEEDS
     assert config["training"]["batch_size"] == 32
@@ -49,7 +49,8 @@ def test_frozen_protocol_selects_exact_main_and_stress_units() -> None:
     assert config["training"]["num_workers"] == 0
     assert config["training"]["deterministic"] is False
     assert config["execution"]["fast_kernels"] is True
-    assert config["execution"]["parallel_physical_processes"] == 4
+    assert config["execution"]["physical_execution_mode"] == "sequential"
+    assert config["execution"]["parallel_physical_processes"] == 1
     assert config["task"]["cache_deterministic_history"] is True
     assert len(main) == 16
     assert len(stress) == 2
@@ -58,6 +59,7 @@ def test_frozen_protocol_selects_exact_main_and_stress_units() -> None:
     ] == sorted(unit.key for unit in main)
     assert sorted(unit.protocol_index for unit in main) == list(range(16))
     assert sorted(unit.protocol_index for unit in stress) == [0, 1]
+    assert {unit.shard for unit in (*main, *stress)} == {0}
     assert all(unit.generator_seed == 2026 for unit in main)
     assert all(unit.dataset_id == f"{unit.preset}_0000" for unit in main)
     assert all("gseed" not in unit.dataset_id for unit in main)
@@ -72,6 +74,14 @@ def test_frozen_protocol_selects_exact_main_and_stress_units() -> None:
     assert config["preflight"]["full_pytest"] is True
     source_files = set((DEFAULT_CONFIG.parents[2] / "src" / "ts_transformer").rglob("*.py"))
     assert source_files <= set(implementation_paths())
+
+
+def test_frozen_protocol_rejects_parallel_physical_execution() -> None:
+    config = load_final_config(DEFAULT_CONFIG)
+    config["execution"]["parallel_physical_processes"] = 2
+
+    with pytest.raises(ProtocolError, match="parallel_physical_processes: 1"):
+        thesis_runner.validate_final_config(config)
 
 
 def test_run_requires_a_prior_compatible_preflight(tmp_path: Path) -> None:
@@ -294,21 +304,19 @@ def test_full_commands_keep_cohorts_outputs_and_dataset_ids_separate(
     config = load_final_config(DEFAULT_CONFIG)
     commands = build_run_commands(config, root=tmp_path)
 
-    configured = config["execution"]["parallel_physical_processes"]
-    main_processes = min(configured, 16)
-    stress_processes = min(configured, 2)
-    main_physical = commands[:main_processes]
-    main_ident = commands[main_processes]
-    stress_start = main_processes + 1
-    stress_physical = commands[stress_start : stress_start + stress_processes]
-    stress_ident = commands[stress_start + stress_processes]
+    main_physical = commands[:1]
+    main_ident = commands[1]
+    stress_physical = commands[2:3]
+    stress_ident = commands[3]
+    assert len(main_physical) == 1
+    assert len(stress_physical) == 1
     assert all(item.cohort == "main" and item.protocol == "physical_models" for item in main_physical)
     assert (main_ident.cohort, main_ident.protocol) == ("main", "temporal_identifiability")
     assert all(item.cohort == "stress" and item.protocol == "physical_models" for item in stress_physical)
     assert (stress_ident.cohort, stress_ident.protocol) == ("stress", "temporal_identifiability")
-    assert len(commands) == main_processes + stress_processes + 2
-    assert {item.shard for item in main_physical} == set(range(main_processes))
-    assert {item.shard for item in stress_physical} == set(range(stress_processes))
+    assert len(commands) == 4
+    assert {item.shard for item in main_physical} == {0}
+    assert {item.shard for item in stress_physical} == {0}
     assert all(
         all("long_gaps_gseed3031_0000" not in argument for argument in item.command)
         for item in main_physical
@@ -337,12 +345,16 @@ def test_full_commands_keep_cohorts_outputs_and_dataset_ids_separate(
             if value == "--dataset-unit"
         )
         assert item.stdout_log != item.stderr_log
+        assert item.stdout_log is not None
+        assert item.stderr_log is not None
+        assert item.stdout_log.name == "physical_models_shard_0.stdout.log"
+        assert item.stderr_log.name == "physical_models_shard_0.stderr.log"
     assert len(selected_main_units) == 16
     parsed_indices = sorted(int(value.rsplit(":", 1)[1]) for value in selected_main_units)
     assert parsed_indices == list(range(16))
 
 
-def test_failed_physical_shard_stops_serial_stages(
+def test_failed_sequential_physical_run_stops_serial_stages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,7 +363,7 @@ def test_failed_physical_shard_stops_serial_stages(
     class FakeProcess:
         def __init__(self, command, **_kwargs) -> None:
             self.command = tuple(command)
-            self.returncode = 7 if "shard_1" in self.command else 0
+            self.returncode = 7
 
         def wait(self, timeout=None) -> int:
             del timeout
@@ -372,18 +384,15 @@ def test_failed_physical_shard_stops_serial_stages(
         "run",
         lambda command, **_kwargs: serial_calls.append(tuple(command)),
     )
-    physical = [
-        CommandSpec(
-            cohort="main",
-            protocol="physical_models",
-            command=("python", f"shard_{shard}"),
-            output_dir=tmp_path / f"shard_{shard}",
-            shard=shard,
-            stdout_log=tmp_path / f"shard_{shard}.out.log",
-            stderr_log=tmp_path / f"shard_{shard}.err.log",
-        )
-        for shard in (0, 1)
-    ]
+    physical = CommandSpec(
+        cohort="main",
+        protocol="physical_models",
+        command=("python", "shard_0"),
+        output_dir=tmp_path / "shard_0",
+        shard=0,
+        stdout_log=tmp_path / "shard_0.out.log",
+        stderr_log=tmp_path / "shard_0.err.log",
+    )
     identifiability = CommandSpec(
         cohort="main",
         protocol="temporal_identifiability",
@@ -392,12 +401,12 @@ def test_failed_physical_shard_stops_serial_stages(
     )
 
     with pytest.raises(ProtocolError, match="no se consolida ni publica"):
-        execute_commands([*physical, identifiability])
+        execute_commands([physical, identifiability])
 
     assert serial_calls == []
 
 
-def test_parallel_physical_emits_heartbeat_and_completion(
+def test_sequential_physical_emits_heartbeat_and_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -428,21 +437,19 @@ def test_parallel_physical_emits_heartbeat_and_completion(
         CommandSpec(
             cohort="main",
             protocol="physical_models",
-            command=("python", f"shard_{shard}"),
-            output_dir=tmp_path / f"shard_{shard}",
-            shard=shard,
-            stdout_log=tmp_path / f"shard_{shard}.out.log",
-            stderr_log=tmp_path / f"shard_{shard}.err.log",
+            command=("python", "shard_0"),
+            output_dir=tmp_path / "shard_0",
+            shard=0,
+            stdout_log=tmp_path / "shard_0.out.log",
+            stderr_log=tmp_path / "shard_0.err.log",
         )
-        for shard in (0, 1)
     ]
 
-    thesis_runner._execute_parallel_physical(specs)
+    thesis_runner._execute_sequential_physical(specs)
 
     output = capsys.readouterr().out
-    assert "heartbeat: activos=shard_0,shard_1; completos=-" in output
+    assert "heartbeat: activos=shard_0; completos=-" in output
     assert "shard_0] terminado (returncode=0)" in output
-    assert "shard_1] terminado (returncode=0)" in output
 
 
 def test_keyboard_interrupt_terminates_only_active_children(
@@ -452,8 +459,7 @@ def test_keyboard_interrupt_terminates_only_active_children(
     children = []
 
     class InterruptibleProcess:
-        def __init__(self, command, **_kwargs) -> None:
-            self.shard = 0 if "shard_0" in command else 1
+        def __init__(self, _command, **_kwargs) -> None:
             self.returncode = None
             self.terminate_calls = 0
             self.wait_calls = 0
@@ -461,8 +467,6 @@ def test_keyboard_interrupt_terminates_only_active_children(
             children.append(self)
 
         def poll(self):
-            if self.shard == 0:
-                self.returncode = 0
             return self.returncode
 
         def wait(self, timeout=None) -> int:
@@ -489,37 +493,34 @@ def test_keyboard_interrupt_terminates_only_active_children(
         CommandSpec(
             cohort="main",
             protocol="physical_models",
-            command=("python", f"shard_{shard}"),
-            output_dir=tmp_path / f"shard_{shard}",
-            shard=shard,
-            stdout_log=tmp_path / f"shard_{shard}.out.log",
-            stderr_log=tmp_path / f"shard_{shard}.err.log",
+            command=("python", "shard_0"),
+            output_dir=tmp_path / "shard_0",
+            shard=0,
+            stdout_log=tmp_path / "shard_0.out.log",
+            stderr_log=tmp_path / "shard_0.err.log",
         )
-        for shard in (0, 1)
     ]
 
     with pytest.raises(KeyboardInterrupt):
-        thesis_runner._execute_parallel_physical(specs)
+        thesis_runner._execute_sequential_physical(specs)
 
-    completed, active = children
-    assert completed.returncode == 0
-    assert completed.terminate_calls == 0
+    (active,) = children
     assert active.terminate_calls == 1
     assert active.wait_calls == 1
     assert active.kill_calls == 0
 
 
-def test_incomplete_shard_cannot_publish_consolidated_tree(
+def test_incomplete_sequential_run_cannot_publish_consolidated_tree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    units = (
-        DatasetUnit("multivariate", "p0", "p0_0000", 2026, 0, 0),
-        DatasetUnit("univariate", "p0", "p0_0000", 2026, 1, 1),
-    )
+    units = (DatasetUnit("multivariate", "p0", "p0_0000", 2026, 0, 0),)
     config = {
         "dataset_cohorts": {"main": {"output_subdir": "main"}},
-        "execution": {"parallel_physical_processes": 2},
+        "execution": {
+            "physical_execution_mode": "sequential",
+            "parallel_physical_processes": 1,
+        },
         "models": ["QueryCross"],
     }
     monkeypatch.setattr(
@@ -528,17 +529,12 @@ def test_incomplete_shard_cannot_publish_consolidated_tree(
         lambda _config, _cohort: units,
     )
 
-    def fake_audit(_config, _cohort, physical_root, **_kwargs):
-        if physical_root.name == "shard_1":
-            raise ProtocolError("shard incompleto")
-        return pd.DataFrame(), {
-            "summary": {"path": "unused", "size": 0, "sha256": "0"},
-            "expected_runs": 1,
-        }
+    def fake_audit(_config, _cohort, _physical_root, **_kwargs):
+        raise ProtocolError("ejecución secuencial incompleta")
 
     monkeypatch.setattr(thesis_runner, "_audit_physical_root", fake_audit)
 
-    with pytest.raises(ProtocolError, match="shard incompleto"):
+    with pytest.raises(ProtocolError, match="ejecución secuencial incompleta"):
         consolidate_physical_shards(
             config,
             "main",
