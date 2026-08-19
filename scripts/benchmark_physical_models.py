@@ -2311,6 +2311,11 @@ def run_model(
         if hasattr(torch.backends, "cudnn"):
             torch.backends.cudnn.allow_tf32 = False
     elif hasattr(torch.backends, "cuda"):
+        if hasattr(torch.backends.cuda, "matmul"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
         if hasattr(torch.backends.cuda, "enable_flash_sdp"):
             torch.backends.cuda.enable_flash_sdp(True)
         if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
