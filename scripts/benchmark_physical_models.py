@@ -987,7 +987,7 @@ def make_loaders(
         "batch_size": batch_size,
         "num_workers": num_workers,
         "collate_fn": collate,
-        "pin_memory": device.startswith("cuda"),
+        "pin_memory": device.startswith("cuda") and num_workers > 0,
     }
     generator = torch.Generator().manual_seed(seed)
     train = DataLoader(data.train, shuffle=True, generator=generator, **common)
